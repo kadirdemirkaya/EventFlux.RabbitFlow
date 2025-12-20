@@ -1,6 +1,7 @@
 ﻿using EventFlux.Abstractions;
 using EventFlux.Extensions;
 using EventFlux.RabbitMQ.Abstractions;
+using EventFlux.RabbitMQ.Context;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
@@ -13,6 +14,7 @@ namespace EventFlux.RabbitMQ
         public static IServiceCollection AddEventFluxRabbitFlow(this IServiceCollection services, Assembly assembly, IConnectionFactory connectionFactory, string serviceName)
         {
             // 1
+            services.AddSingleton<IEventFluxContextAccessor, EventFluxContextAccessor>();
             services.AddEventBus(assembly);
 
             // 2
@@ -36,8 +38,9 @@ namespace EventFlux.RabbitMQ
                 var serviceBus = sp.GetRequiredService<IEventBus>(); // !!!!!
 
                 var eventBusSubcriptionsManager = sp.GetRequiredService<IEventBusSubscriptionsManager>();
+                var contextAccessor = sp.GetRequiredService<IEventFluxContextAccessor>();
 
-                return new EventBusRabbitMQ(rabbitMQPersistentConnection, logger, iLifetimeScope, eventBusSubcriptionsManager, serviceBus, serviceName, 5);
+                return new EventBusRabbitMQ(rabbitMQPersistentConnection, logger, iLifetimeScope, eventBusSubcriptionsManager, serviceBus, contextAccessor, serviceName, 5);
             });
 
             // 5 (handler inject and subscribe)

@@ -1,5 +1,6 @@
 ﻿using EventFlux.Abstractions;
 using EventFlux.RabbitMQ.Abstractions;
+using EventFlux.RabbitMQ.Context;
 using Microsoft.Extensions.DependencyInjection;
 using Microsoft.Extensions.Logging;
 using Newtonsoft.Json;
@@ -31,9 +32,10 @@ namespace EventFlux.RabbitMQ
             IServiceScopeFactory serviceScope,
             IEventBusSubscriptionsManager subsManager,
             IEventBus eventBus,
+            IEventFluxContextAccessor contextAccessor,
             string serviceName,
             int retryCount = 5)
-            : base(logger, subsManager, serviceScope, appName, eventBus)
+            : base(logger, subsManager, serviceScope, appName, eventBus, contextAccessor)
         {
             _eventBus = eventBus;
             _persistentConnection = persistentConnection ?? throw new ArgumentNullException(nameof(persistentConnection));
@@ -96,6 +98,15 @@ namespace EventFlux.RabbitMQ
                     {
                         var properties = new BasicProperties();
 
+                        if (_contextAccessor.Context != null && _contextAccessor.Context.Items.Any())
+                        {
+                            properties.Headers = new Dictionary<string, object?>();
+                            foreach (var item in _contextAccessor.Context.Items)
+                            {
+                                properties.Headers.Add(item.Key, item.Value);
+                            }
+                        }
+
                         properties.DeliveryMode = DeliveryModes.Persistent;
 
                         await channel.BasicPublishAsync(
@@ -142,6 +153,15 @@ namespace EventFlux.RabbitMQ
                     await policy.Execute(async () =>
                     {
                         var properties = new BasicProperties();
+
+                        if (_contextAccessor.Context != null && _contextAccessor.Context.Items.Any())
+                        {
+                            properties.Headers = new Dictionary<string, object?>();
+                            foreach (var item in _contextAccessor.Context.Items)
+                            {
+                                properties.Headers.Add(item.Key, item.Value);
+                            }
+                        }
 
                         properties.DeliveryMode = DeliveryModes.Persistent;
 
@@ -256,7 +276,7 @@ namespace EventFlux.RabbitMQ
                     throw new InvalidOperationException($"Fake exception requested: \"{message}\"");
                 }
 
-                await base.ProcessEvent(eventName, message);
+                await base.ProcessEvent(eventName, message, eventArgs.BasicProperties.Headers);
             }
             catch (Exception ex)
             {
