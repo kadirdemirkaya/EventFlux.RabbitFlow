@@ -9,6 +9,7 @@ EventFlux.RabbitFlow is a lightweight event-driven library that integrates with 
 - Easy event publishing and subscription
 - Automatic dependency injection support
 - Simple conventions for event handlers
+- Context propagation support (headers)
 
 ## Requirements
 
@@ -90,6 +91,56 @@ public async Task<IActionResult> Post()
 	ExampleEventRequest @event = new ExampleEventRequest { Str = "Hello World" };
 	await _eventBus.PublishAsync(@event);
 	return Ok();
+}
+```
+
+6. Publish an event with context
+
+In your API controller or service, publish an event:
+
+```csharp
+[HttpPost]
+public async Task<IActionResult> Post()
+{
+    // Set context
+    _contextAccessor.Context = new EventFluxContext();
+    _contextAccessor.Context.Items["UserId"] = "12345";
+    _contextAccessor.Context.Items["CorrelationId"] = Guid.NewGuid().ToString();
+
+    TestIntegrationEvent @event = new TestIntegrationEvent("aasdnasfnfavsfh");
+
+    await _eventBus.PublishAsync(@event);
+
+    return Ok();
+}
+```
+
+7. Consume event with context
+
+Inject `IEventFluxContextAccessor` into your event handler to access the context data:
+
+```csharp
+public class ExampleEventRequestHandler : IEventHandler<ExampleEventRequest>
+{
+    private readonly IEventFluxContextAccessor _contextAccessor;
+
+    public ExampleEventRequestHandler(IEventFluxContextAccessor contextAccessor)
+    {
+        _contextAccessor = contextAccessor;
+    }
+
+    public async Task Handle(ExampleEventRequest @event)
+    {
+        Console.WriteLine("Consume data: " + @event.Str);
+
+        if (_contextAccessor.Context != null)
+        {
+             if (_contextAccessor.Context.Items.TryGetValue("UserId", out var userId))
+             {
+                 Console.WriteLine($"UserId: {userId}");
+             }
+        }
+    }
 }
 ```
 

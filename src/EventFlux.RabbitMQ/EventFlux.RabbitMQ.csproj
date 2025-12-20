@@ -7,7 +7,7 @@
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageId>EventFlux.RabbitFlow</PackageId>
-		<Version>1.0.2</Version>
+		<Version>1.0.3</Version>
 		<Authors>Kadir Demirkaya</Authors>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<Description>Lightweight .NET library for event-driven applications, providing distributed event support and domain events with EventFlux and RabbitMQ.</Description>
@@ -16,7 +16,7 @@
 			CQRS;EventBus;EventSourcing;DistributedEvents;RabbitMQ;EventFlux;DomainEvents;.NET;MessageBroker;EventDriven
 		</PackageTags>
 		<PackageReleaseNotes></PackageReleaseNotes>
-		<AssemblyInformationalVersion>1.0.2</AssemblyInformationalVersion>
+		<AssemblyInformationalVersion>1.0.3</AssemblyInformationalVersion>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 	</PropertyGroup>
