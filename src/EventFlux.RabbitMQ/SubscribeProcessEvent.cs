@@ -13,7 +13,6 @@ namespace EventFlux.RabbitMQ
         protected readonly IEventBusSubscriptionsManager _subsManager;
         private readonly string _appName;
         private readonly IServiceScopeFactory _serviceScopeFactory;
-        private readonly IEventBus _eventBus;
         protected readonly IEventFluxContextAccessor _contextAccessor;
 
         protected SubscribeProcessEvent(ILogger<IEventBroker> logger,
@@ -22,50 +21,59 @@ namespace EventFlux.RabbitMQ
             string appName,
             IEventBus eventBus,
             IEventFluxContextAccessor contextAccessor)
+            : this(logger, subsManager, serviceScopeFactory, appName, contextAccessor)
+        {
+        }
+
+        protected SubscribeProcessEvent(ILogger<IEventBroker> logger,
+            IEventBusSubscriptionsManager subsManager,
+            IServiceScopeFactory serviceScopeFactory,
+            string appName,
+            IEventFluxContextAccessor contextAccessor)
         {
             _logger = logger;
             _subsManager = subsManager;
             _serviceScopeFactory = serviceScopeFactory;
             _appName = appName;
-            _eventBus = eventBus;
             _contextAccessor = contextAccessor;
         }
 
-        protected virtual async Task ProcessEvent(string eventName, string message, IDictionary<string, object?> headers = null)
+        protected virtual Task ProcessEvent(string eventName, string message, IDictionary<string, object?>? headers = null)
+            => ProcessEvent(eventName, message, headers, CancellationToken.None);
+
+        protected virtual async Task ProcessEvent(string eventName, string message, IDictionary<string, object?>? headers, CancellationToken cancellationToken)
         {
-            if (_subsManager.HasSubscriptionsForEvent(eventName))
+            if (!_subsManager.HasSubscriptionsForEvent(eventName))
             {
-                using var scope = _serviceScopeFactory.CreateScope();
+                _logger.LogWarning("No subscription for {AppName} event: {EventName}", _appName, eventName);
+                return;
+            }
 
-                if (headers != null && headers.Count > 0)
+            var eventType = _subsManager.GetEventTypeByName(eventName)
+                ?? throw new InvalidOperationException($"No event type is registered for '{eventName}'.");
+
+            var integrationEvent = JsonConvert.DeserializeObject(message, eventType) as IEventRequest
+                ?? throw new InvalidOperationException($"Message could not be deserialized to '{eventType.FullName}'.");
+
+            var scope = _serviceScopeFactory.CreateAsyncScope();
+            await using var scopeDisposal = scope.ConfigureAwait(false);
+
+            if (headers != null && headers.Count > 0)
+            {
+                var context = new EventFluxContext();
+                foreach (var header in headers)
                 {
-                    var context = new EventFluxContext();
-                    foreach (var header in headers)
-                    {
-                        if (header.Value is byte[] bytes)
-                        {
-                            context.Items[header.Key] = System.Text.Encoding.UTF8.GetString(bytes);
-                        }
-                        else
-                        {
-                            context.Items[header.Key] = header.Value;
-                        }
-                    }
-                    _contextAccessor.Context = context;
+                    context.Items[header.Key] = header.Value is byte[] bytes
+                        ? System.Text.Encoding.UTF8.GetString(bytes)
+                        : header.Value!;
                 }
-
-                var eventType = _subsManager.GetEventTypeByName(eventName);
-                var integrationEvent = (IEventRequest)JsonConvert.DeserializeObject(message, eventType);
-
-                var eventPublisher = scope.ServiceProvider.GetRequiredService<IEventBus>();
-                await eventPublisher.PublishAsync(integrationEvent);
-
-                _logger.LogInformation("EventFlux ile {EventName} işlendi", eventName);
+                _contextAccessor.Context = context;
             }
-            else
-            {
-                _logger.LogWarning($"No subscription for {_appName} event: {eventName}");
-            }
+
+            var eventBus = scope.ServiceProvider.GetRequiredService<IEventBus>();
+            await eventBus.PublishAsync(integrationEvent, cancellationToken).ConfigureAwait(false);
+
+            _logger.LogInformation("Processed {EventName} with EventFlux", eventName);
         }
     }
 }

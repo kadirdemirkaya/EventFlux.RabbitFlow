@@ -1,8 +1,9 @@
 ﻿using EventFlux.Abstractions;
-using EventFlux.Extensions;
 using EventFlux.RabbitMQ.Abstractions;
 using EventFlux.RabbitMQ.Context;
 using Microsoft.Extensions.DependencyInjection;
+using Microsoft.Extensions.DependencyInjection.Extensions;
+using Microsoft.Extensions.Hosting;
 using Microsoft.Extensions.Logging;
 using RabbitMQ.Client;
 using System.Reflection;
@@ -12,85 +13,81 @@ namespace EventFlux.RabbitMQ
     public static class RabbitFlowExtensions
     {
         public static IServiceCollection AddEventFluxRabbitFlow(this IServiceCollection services, Assembly assembly, IConnectionFactory connectionFactory, string serviceName)
+            => services.AddEventFluxRabbitFlow(assembly, connectionFactory, serviceName, _ => { });
+
+        public static IServiceCollection AddEventFluxRabbitFlow(this IServiceCollection services, Assembly assembly, IConnectionFactory connectionFactory, string serviceName, Action<RabbitFlowOptions> configure)
         {
-            // 1
-            services.AddSingleton<IEventFluxContextAccessor, EventFluxContextAccessor>();
+            ArgumentNullException.ThrowIfNull(services);
+            ArgumentNullException.ThrowIfNull(assembly);
+            ArgumentNullException.ThrowIfNull(connectionFactory);
+            ArgumentNullException.ThrowIfNull(serviceName);
+            ArgumentNullException.ThrowIfNull(configure);
+
+            var options = new RabbitFlowOptions();
+            configure(options);
+
+            services.TryAddSingleton<IEventFluxContextAccessor, EventFluxContextAccessor>();
             services.AddEventBus(assembly);
 
-            // 2
-            services.AddScoped<IEventBusSubscriptionsManager, EventBusSubscriptionsManager>();
+            services.TryAddSingleton<IEventBusSubscriptionsManager, EventBusSubscriptionsManager>();
 
-            // 3
-            services.AddScoped<IPersistenceConnection>(sp =>
+            services.TryAddSingleton<IPersistenceConnection>(sp =>
             {
                 var logger = sp.GetRequiredService<ILogger<PersistenceConnection>>();
 
-                return new PersistenceConnection(connectionFactory, logger, 5);
+                return new PersistenceConnection(connectionFactory, logger, options.RetryCount);
             });
 
-            // 4
-            services.AddScoped<IEventBroker, EventBusRabbitMQ>(sp =>
+            services.TryAddSingleton<IEventBroker>(sp => new EventBusRabbitMQ(
+                sp.GetRequiredService<IPersistenceConnection>(),
+                sp.GetRequiredService<ILogger<IEventBroker>>(),
+                sp.GetRequiredService<IServiceScopeFactory>(),
+                sp.GetRequiredService<IEventBusSubscriptionsManager>(),
+                sp.GetRequiredService<IEventFluxContextAccessor>(),
+                serviceName,
+                options));
+
+            foreach (var (_, handlerType) in FindEventHandlers(assembly))
             {
-                var rabbitMQPersistentConnection = sp.GetRequiredService<IPersistenceConnection>();
-                var iLifetimeScope = sp.GetRequiredService<IServiceScopeFactory>();
-                var logger = sp.GetRequiredService<ILogger<IEventBroker>>();
+                services.TryAddTransient(handlerType);
+            }
 
-                var serviceBus = sp.GetRequiredService<IEventBus>(); // !!!!!
-
-                var eventBusSubcriptionsManager = sp.GetRequiredService<IEventBusSubscriptionsManager>();
-                var contextAccessor = sp.GetRequiredService<IEventFluxContextAccessor>();
-
-                return new EventBusRabbitMQ(rabbitMQPersistentConnection, logger, iLifetimeScope, eventBusSubcriptionsManager, serviceBus, contextAccessor, serviceName, 5);
-            });
-
-            // 5 (handler inject and subscribe)
-            var eventHandlerTypes = assembly.GetTypes()
-                .Where(t => t.GetInterfaces().Any(i =>
-                    i.IsGenericType &&
-                    i.GetGenericTypeDefinition() == typeof(IEventHandler<>)))
-                .ToList();
-
-            foreach (var handlerType in eventHandlerTypes)
+            if (options.AutoSubscribe)
             {
-                var eventType = handlerType.GetInterfaces()
-                    .First(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEventHandler<>))
-                    .GetGenericArguments()[0];
-
-                services.AddTransient(handlerType);
+                services.AddSingleton<IHostedService>(sp => new RabbitFlowSubscriptionService(sp, assembly));
             }
 
             return services;
         }
 
-        private static void UseEventFluxRabbitFlow(this IServiceProvider serviceProvider, Assembly assembly)
+        public static IServiceProvider UseEventFluxRabbitFlow(this IServiceProvider serviceProvider, Assembly assembly)
         {
-            using (var scope = serviceProvider.CreateScope())
+            serviceProvider.UseEventFluxRabbitFlowAsync(assembly).GetAwaiter().GetResult();
+            return serviceProvider;
+        }
+
+        public static async Task UseEventFluxRabbitFlowAsync(this IServiceProvider serviceProvider, Assembly assembly, CancellationToken cancellationToken = default)
+        {
+            ArgumentNullException.ThrowIfNull(serviceProvider);
+            ArgumentNullException.ThrowIfNull(assembly);
+
+            var eventBroker = serviceProvider.GetRequiredService<IEventBroker>();
+            var subscribeMethod = typeof(IEventBroker).GetMethod(nameof(IEventBroker.SubscribeAsync))!;
+
+            foreach (var (eventType, handlerType) in FindEventHandlers(assembly))
             {
-                var eventBus = scope.ServiceProvider.GetRequiredService<IEventBroker>();
+                cancellationToken.ThrowIfCancellationRequested();
 
-                var eventHandlerTypes = assembly.GetTypes()
-                    .Where(t => t.GetInterfaces().Any(i =>
-                        i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEventHandler<>)))
-                    .ToList();
-
-                foreach (var handlerType in eventHandlerTypes)
-                {
-                    var eventType = handlerType.GetInterfaces()
-                        .First(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEventHandler<>))
-                        .GetGenericArguments()[0];
-
-                    var subscribeMethod = eventBus.GetType().GetMethod("SubscribeAsync")!
-                        .MakeGenericMethod(eventType, handlerType);
-
-                    // invoke async subscribe method (no parameters) and wait for completion
-                    var result = subscribeMethod.Invoke(eventBus, new object[] { });
-                    if (result is System.Threading.Tasks.Task task)
-                    {
-                        task.GetAwaiter().GetResult();
-                    }
-                }
+                var task = (Task)subscribeMethod.MakeGenericMethod(eventType, handlerType).Invoke(eventBroker, new object?[] { null })!;
+                await task.ConfigureAwait(false);
             }
         }
-    }
 
+        internal static IEnumerable<(Type EventType, Type HandlerType)> FindEventHandlers(Assembly assembly)
+            => assembly.GetTypes()
+                .Where(t => t.IsClass && !t.IsAbstract && !t.ContainsGenericParameters)
+                .SelectMany(t => t.GetInterfaces()
+                    .Where(i => i.IsGenericType && i.GetGenericTypeDefinition() == typeof(IEventHandler<>))
+                    .Select(i => (i.GetGenericArguments()[0], t)));
+    }
 }
