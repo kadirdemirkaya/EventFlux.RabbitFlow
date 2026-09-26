@@ -31,6 +31,8 @@ namespace EventFlux.RabbitMQ
         private IChannel? _consumerChannel;
         private bool _disposed;
 
+        internal Task ConsumerRecovery { get; private set; } = Task.CompletedTask;
+
         public EventBusRabbitMQ(IPersistenceConnection persistentConnection,
             ILogger<IEventBroker> logger,
             IServiceScopeFactory serviceScope,
@@ -61,6 +63,7 @@ namespace EventFlux.RabbitMQ
             _publishPolicy = Policy.Handle<BrokerUnreachableException>()
                 .Or<SocketException>()
                 .Or<AlreadyClosedException>()
+                .Or<InvalidOperationException>(_ => !_persistentConnection.IsConnected)
                 .WaitAndRetryAsync(_options.RetryCount, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (ex, time) =>
                 {
                     _logger.LogWarning(ex, "Could not publish event after {TimeOut}s ({ExceptionMessage})", $"{time.TotalSeconds:n1}", ex.Message);
@@ -364,6 +367,7 @@ namespace EventFlux.RabbitMQ
             }
 
             channel.CallbackExceptionAsync += OnConsumerCallbackExceptionAsync;
+            channel.ChannelShutdownAsync += OnConsumerChannelShutdownAsync;
 
             _consumerChannel = channel;
             return channel;
@@ -375,10 +379,30 @@ namespace EventFlux.RabbitMQ
 
             _logger.LogWarning(ea.Exception, "Recreating RabbitMQ consumer channel");
 
+            await RestartConsumersAsync(sender).ConfigureAwait(false);
+        }
+
+        private Task OnConsumerChannelShutdownAsync(object sender, ShutdownEventArgs reason)
+        {
+            if (_disposed
+                || reason.Initiator == ShutdownInitiator.Application
+                || _persistentConnection is not PersistenceConnection { RecoversAutomatically: false })
+            {
+                return Task.CompletedTask;
+            }
+
+            _logger.LogWarning("RabbitMQ consumer channel was shut down ({ReplyText}), restarting consumers", reason.ReplyText);
+
+            ConsumerRecovery = Task.Run(() => RestartConsumersAsync(sender));
+            return Task.CompletedTask;
+        }
+
+        private async Task RestartConsumersAsync(object closedChannel)
+        {
             await _consumerLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (!ReferenceEquals(sender, _consumerChannel)) return;
+                if (_disposed || !ReferenceEquals(closedChannel, _consumerChannel)) return;
 
                 _consumerChannel?.Dispose();
                 _consumerChannel = null;

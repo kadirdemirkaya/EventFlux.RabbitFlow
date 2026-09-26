@@ -14,17 +14,27 @@ namespace EventFlux.RabbitMQ
         private readonly IConnectionFactory _connectionFactory;
         private readonly ILogger<PersistenceConnection> _logger;
         private readonly int _retryCount;
-        IConnection _connection;
+        IConnection? _connection;
         bool _disposed;
 
         object @lock = new object();
 
         public PersistenceConnection(IConnectionFactory connectionFactory, ILogger<PersistenceConnection> logger, int retryCount = 5)
+            : this(connectionFactory, logger, retryCount, connectionFactory is ConnectionFactory { AutomaticRecoveryEnabled: true })
+        {
+        }
+
+        internal PersistenceConnection(IConnectionFactory connectionFactory, ILogger<PersistenceConnection> logger, int retryCount, bool recoversAutomatically)
         {
             _connectionFactory = connectionFactory ?? throw new ArgumentNullException(nameof(connectionFactory));
             _logger = logger ?? throw new ArgumentNullException(nameof(logger));
             _retryCount = retryCount;
+            RecoversAutomatically = recoversAutomatically;
         }
+
+        internal bool RecoversAutomatically { get; }
+
+        internal Task Reconnection { get; private set; } = Task.CompletedTask;
 
         public bool IsConnected
         {
@@ -41,7 +51,7 @@ namespace EventFlux.RabbitMQ
                 throw new InvalidOperationException("No RabbitMQ connections are available to perform this action");
             }
 
-            return await _connection.CreateChannelAsync().ConfigureAwait(false);
+            return await _connection!.CreateChannelAsync().ConfigureAwait(false);
         }
 
         public void Dispose()
@@ -50,9 +60,12 @@ namespace EventFlux.RabbitMQ
 
             _disposed = true;
 
+            if (_connection == null) return;
+
             try
             {
-                _connection?.Dispose();
+                Detach(_connection);
+                _connection.Dispose();
             }
             catch (IOException ex)
             {
@@ -62,10 +75,19 @@ namespace EventFlux.RabbitMQ
 
         public bool TryConnect()
         {
-            _logger.LogInformation("RabbitMQ Client is trying to connect");
-
             lock (@lock)
             {
+                if (IsConnected) return true;
+                if (_disposed) return false;
+
+                if (_connection != null && RecoversAutomatically)
+                {
+                    _logger.LogWarning("RabbitMQ connection is down, waiting for automatic recovery");
+                    return false;
+                }
+
+                _logger.LogInformation("RabbitMQ Client is trying to connect");
+
                 var policy = RetryPolicy.Handle<SocketException>()
                     .Or<BrokerUnreachableException>()
                     .WaitAndRetry(_retryCount, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (ex, time) =>
@@ -74,6 +96,9 @@ namespace EventFlux.RabbitMQ
                     }
                 );
 
+                Release(_connection);
+                _connection = null;
+
                 policy.Execute(() =>
                 {
                     _connection = _connectionFactory.CreateConnectionAsync().GetAwaiter().GetResult();
@@ -81,7 +106,7 @@ namespace EventFlux.RabbitMQ
 
                 if (IsConnected)
                 {
-                    _connection.ConnectionShutdownAsync += OnConnectionShutdown;
+                    _connection!.ConnectionShutdownAsync += OnConnectionShutdown;
                     _connection.CallbackExceptionAsync += OnCallbackException;
                     _connection.ConnectionBlockedAsync += OnConnectionBlocked;
 
@@ -96,31 +121,62 @@ namespace EventFlux.RabbitMQ
             }
         }
 
-        private async Task OnConnectionBlocked(object sender, ConnectionBlockedEventArgs e)
+        private void Release(IConnection? connection)
         {
-            if (_disposed) return;
+            if (connection == null) return;
 
-            _logger.LogWarning("A RabbitMQ connection is OnConnection blocked. Trying to reconnect...");
+            Detach(connection);
 
-            TryConnect();
+            try
+            {
+                connection.Dispose();
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not dispose the previous RabbitMQ connection");
+            }
         }
 
-        private async Task OnCallbackException(object sender, CallbackExceptionEventArgs e)
+        private void Detach(IConnection connection)
         {
-            if (_disposed) return;
-
-            _logger.LogWarning("A RabbitMQ connection throw OnCallback exception. Trying to reconnect...");
-
-            TryConnect();
+            connection.ConnectionShutdownAsync -= OnConnectionShutdown;
+            connection.CallbackExceptionAsync -= OnCallbackException;
+            connection.ConnectionBlockedAsync -= OnConnectionBlocked;
         }
 
-        private async Task OnConnectionShutdown(object sender, ShutdownEventArgs reason)
+        private Task OnConnectionBlocked(object sender, ConnectionBlockedEventArgs e)
         {
-            if (_disposed) return;
+            if (_disposed) return Task.CompletedTask;
 
-            _logger.LogWarning("A RabbitMQ connection is on OnConnection shutdown. Trying to reconnect...");
+            _logger.LogWarning("RabbitMQ connection is blocked by the broker ({Reason})", e.Reason);
 
-            TryConnect();
+            return Task.CompletedTask;
+        }
+
+        private Task OnCallbackException(object sender, CallbackExceptionEventArgs e)
+        {
+            if (_disposed) return Task.CompletedTask;
+
+            _logger.LogWarning(e.Exception, "RabbitMQ connection callback threw an exception");
+
+            return Task.CompletedTask;
+        }
+
+        private Task OnConnectionShutdown(object sender, ShutdownEventArgs reason)
+        {
+            if (_disposed || reason.Initiator == ShutdownInitiator.Application) return Task.CompletedTask;
+
+            if (RecoversAutomatically)
+            {
+                _logger.LogWarning("RabbitMQ connection was shut down ({ReplyText}), waiting for automatic recovery", reason.ReplyText);
+                return Task.CompletedTask;
+            }
+
+            _logger.LogWarning("RabbitMQ connection was shut down ({ReplyText}). Trying to reconnect...", reason.ReplyText);
+
+            Reconnection = Task.Run(TryConnect);
+
+            return Task.CompletedTask;
         }
 
     }

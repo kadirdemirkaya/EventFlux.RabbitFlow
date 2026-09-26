@@ -28,6 +28,8 @@
 			- Added CancellationToken overloads to IEventBroker.PublishAsync
 			- Subscribing the same handler twice, or to a second exchange, no longer throws
 			- Publish retries now cover the whole publish call and keep the original exception
+			- Connection recovery: with automatic recovery enabled (the default) the client's own recovery is no longer interrupted by a second connection; with it disabled the connection is replaced, the old one released and consumers are restarted. Blocked connections and callback exceptions no longer trigger a reconnect, and concurrent connect calls open a single connection
+			- Publishing while the connection is recovering is retried instead of failing immediately
 			- Removed the "throw-fake-exception" test hook from the consumer
 			- Log messages are in English and use structured templates
 			- Message format is unchanged: same JSON bodies, routing key = event type name, same exchange and queue names</PackageReleaseNotes>
