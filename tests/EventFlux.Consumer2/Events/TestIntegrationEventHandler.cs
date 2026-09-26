@@ -5,7 +5,7 @@ namespace EventFlux.Consumer2.Events
 {
     public class TestIntegrationEventHandler : IEventHandler<TestIntegrationEvent>
     {
-        public async Task Handle(TestIntegrationEvent @event)
+        public async Task Handle(TestIntegrationEvent @event, CancellationToken cancellationToken)
         {
             Console.WriteLine("Consume data: " + @event.TestName);
         }

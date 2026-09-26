@@ -5,9 +5,6 @@ using RabbitMQ.Client;
 
 var builder = WebApplication.CreateBuilder(args);
 
-// ❌ KALDIR: builder.Services.AddOpenApi();
-
-// ✔ Swashbuckle
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddControllers();
@@ -29,9 +26,8 @@ if (app.Environment.IsDevelopment())
     app.UseSwaggerUI();
 }
 
-var sp = builder.Services.BuildServiceProvider();
-var eventBus = sp.GetRequiredService<IEventBroker>();
-await eventBus.SubscribeAsync<ExampleEventRequest, ExampleEventRequestHandler>();
+var eventBroker = app.Services.GetRequiredService<IEventBroker>();
+await eventBroker.SubscribeAsync<ExampleEventRequest, ExampleEventRequestHandler>();
 
 app.MapControllers();
 app.UseHttpsRedirection();

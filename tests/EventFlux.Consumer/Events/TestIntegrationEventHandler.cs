@@ -12,7 +12,7 @@ namespace EventFlux.Consumer.Events
             _contextAccessor = contextAccessor;
         }
 
-        public async Task Handle(TestIntegrationEvent @event)
+        public async Task Handle(TestIntegrationEvent @event, CancellationToken cancellationToken)
         {
             Console.WriteLine("Consume data: " + @event.TestName);
 

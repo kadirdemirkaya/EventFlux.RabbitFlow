@@ -1,22 +1,37 @@
 ﻿<Project Sdk="Microsoft.NET.Sdk">
 
 	<PropertyGroup>
-		<TargetFrameworks>net6.0;net7.0;net8.0;net9.0</TargetFrameworks>
-		<LangVersion>preview</LangVersion>
+		<TargetFrameworks>net8.0;net9.0;net10.0</TargetFrameworks>
+		<LangVersion>latest</LangVersion>
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageId>EventFlux.RabbitFlow</PackageId>
-		<Version>1.0.3</Version>
+		<Version>1.1.0</Version>
 		<Authors>Kadir Demirkaya</Authors>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<Description>Lightweight .NET library for event-driven applications, providing distributed event support and domain events with EventFlux and RabbitMQ.</Description>
 		<RepositoryType>git</RepositoryType>
+		<RepositoryUrl>https://github.com/kadirdemirkaya/EventFlux.RabbitFlow</RepositoryUrl>
+		<PackageProjectUrl>https://github.com/kadirdemirkaya/EventFlux.RabbitFlow</PackageProjectUrl>
 		<PackageTags>
 			CQRS;EventBus;EventSourcing;DistributedEvents;RabbitMQ;EventFlux;DomainEvents;.NET;MessageBroker;EventDriven
 		</PackageTags>
-		<PackageReleaseNotes></PackageReleaseNotes>
-		<AssemblyInformationalVersion>1.0.3</AssemblyInformationalVersion>
+		<PackageReleaseNotes>v1.1.0:
+			- Migrated to EventFlux 2.1.0 (requires EventFlux &gt;= 2.1.0). Incoming messages are dispatched with IEventBus.PublishAsync(IEventRequest, CancellationToken); the MissingMethodException that made 1.0.3 drop every message under EventFlux 2.x is gone
+			- Event handlers now use the EventFlux 2.x signature Handle(TEvent, CancellationToken); the token is the delivery's cancellation token
+			- Targets net8.0, net9.0 and net10.0 (net6.0 and net7.0 were dropped because EventFlux 2.x does not support them). Microsoft.Extensions.* dependencies follow the major version of each target, so net8 apps no longer hit CS1705 or assembly load errors
+			- New failure semantics: a message whose handler throws is no longer acknowledged. By default it is rejected and requeued (RabbitFlowOptions.OnFailure = Requeue); OnFailure = DeadLetter moves it to a dead-letter queue instead. Messages are never lost on handler failure
+			- IEventBroker, IPersistenceConnection and IEventBusSubscriptionsManager are singletons, so subscriptions live until the host stops instead of ending with the scope that created them
+			- Added RabbitFlowOptions and an AddEventFluxRabbitFlow overload to configure them (retry count, failure handling, dead-letter names, prefetch, auto subscription)
+			- Added RabbitFlowOptions.AutoSubscribe, which subscribes every handler in the scanned assembly when the host starts, and made IServiceProvider.UseEventFluxRabbitFlow public
+			- Added CancellationToken overloads to IEventBroker.PublishAsync
+			- Subscribing the same handler twice, or to a second exchange, no longer throws
+			- Publish retries now cover the whole publish call and keep the original exception
+			- Removed the "throw-fake-exception" test hook from the consumer
+			- Log messages are in English and use structured templates
+			- Message format is unchanged: same JSON bodies, routing key = event type name, same exchange and queue names</PackageReleaseNotes>
+		<AssemblyInformationalVersion>1.1.0</AssemblyInformationalVersion>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 	</PropertyGroup>
@@ -27,10 +42,32 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="EventFlux" Version="1.2.0" />
+		<InternalsVisibleTo Include="EventFlux.RabbitFlow.Tests" />
+	</ItemGroup>
+
+	<ItemGroup>
+		<PackageReference Include="EventFlux" Version="2.1.0" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
 		<PackageReference Include="Polly" Version="8.5.2" />
 		<PackageReference Include="RabbitMQ.Client" Version="7.1.2" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)' == 'net8.0'">
+		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="8.0.2" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="8.0.3" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="8.0.1" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)' == 'net9.0'">
+		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="9.0.20" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="9.0.20" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="9.0.20" />
+	</ItemGroup>
+
+	<ItemGroup Condition="'$(TargetFramework)' == 'net10.0'">
+		<PackageReference Include="Microsoft.Extensions.DependencyInjection.Abstractions" Version="10.0.12" />
+		<PackageReference Include="Microsoft.Extensions.Logging.Abstractions" Version="10.0.12" />
+		<PackageReference Include="Microsoft.Extensions.Hosting.Abstractions" Version="10.0.12" />
 	</ItemGroup>
 
 </Project>

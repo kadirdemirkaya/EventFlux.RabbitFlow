@@ -7,6 +7,12 @@ namespace EventFlux.RabbitMQ.Abstractions
         Task PublishAsync(IEventRequest @event);
         Task PublishAsync(IEventRequest @event, string exchangeName);
 
+        Task PublishAsync(IEventRequest @event, CancellationToken cancellationToken)
+            => PublishAsync(@event);
+
+        Task PublishAsync(IEventRequest @event, string exchangeName, CancellationToken cancellationToken)
+            => PublishAsync(@event, exchangeName);
+
         Task SubscribeAsync<T, TH>(string exchangeName = null)
             where T : IEventRequest
             where TH : IEventHandler<T>;

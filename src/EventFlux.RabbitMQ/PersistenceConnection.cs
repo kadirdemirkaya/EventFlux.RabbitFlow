@@ -41,7 +41,7 @@ namespace EventFlux.RabbitMQ
                 throw new InvalidOperationException("No RabbitMQ connections are available to perform this action");
             }
 
-            return await _connection.CreateChannelAsync();
+            return await _connection.CreateChannelAsync().ConfigureAwait(false);
         }
 
         public void Dispose()
@@ -52,7 +52,7 @@ namespace EventFlux.RabbitMQ
 
             try
             {
-                _connection.Dispose();
+                _connection?.Dispose();
             }
             catch (IOException ex)
             {

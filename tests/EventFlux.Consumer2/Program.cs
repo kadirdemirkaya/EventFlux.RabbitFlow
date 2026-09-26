@@ -20,9 +20,8 @@ if (app.Environment.IsDevelopment())
     app.MapOpenApi();
 }
 
-var _sp = builder.Services.BuildServiceProvider();
-var _eventBus = _sp.GetRequiredService<IEventBroker>();
-await _eventBus.SubscribeAsync<TestIntegrationEvent, TestIntegrationEventHandler>("eventbus_flow_2");
+var eventBroker = app.Services.GetRequiredService<IEventBroker>();
+await eventBroker.SubscribeAsync<TestIntegrationEvent, TestIntegrationEventHandler>("eventbus_flow_2");
 
 app.UseHttpsRedirection();
 
