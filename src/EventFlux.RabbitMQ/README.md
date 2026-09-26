@@ -191,6 +191,12 @@ A delivery cancelled by consumer shutdown is always requeued. A message for an e
 
 Connection settings come from the `IConnectionFactory` passed to `AddEventFluxRabbitFlow`.
 
+### Connection recovery
+
+- With `ConnectionFactory.AutomaticRecoveryEnabled` (the default), the client restores the connection, channels and consumers itself. RabbitFlow waits for it and does not open a second connection. Publishes made during the outage are retried until the connection is back or `RetryCount` is exhausted.
+- With automatic recovery disabled, RabbitFlow opens a new connection, releases the old one and restarts every consumer on it.
+- A connection blocked by the broker (flow control) is logged, not reconnected.
+
 ## Exchange Support
 
 The service name passed to `AddEventFluxRabbitFlow` is the default exchange. Pass an exchange name to publish or subscribe on a different one.
