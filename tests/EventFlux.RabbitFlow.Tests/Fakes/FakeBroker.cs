@@ -1,3 +1,4 @@
+using System.Collections.Concurrent;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 
@@ -14,11 +15,15 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
 
             (Channel, ChannelRecorder) = RecordingProxy.Create<IChannel>();
 
-            (ConnectionFactory, _) = RecordingProxy.Create<IConnectionFactory>((method, _) =>
-                method.Name == nameof(IConnectionFactory.CreateConnectionAsync) ? Task.FromResult(OpenConnection()) : null);
+            (ConnectionFactory, _) = RecordingProxy.Create<IConnectionFactory>((method, args) =>
+                method.Name == nameof(IConnectionFactory.CreateConnectionAsync) ? ConnectAsync((CancellationToken)args[^1]!) : null);
         }
 
         public IConnectionFactory ConnectionFactory { get; }
+
+        public TaskCompletionSource? ConnectGate { get; set; }
+
+        public ConcurrentQueue<Exception> ConnectFailures { get; } = new();
 
         public IReadOnlyList<FakeConnection> Connections => _connections;
 
@@ -33,6 +38,21 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
         public RecordingProxy ChannelRecorder { get; }
 
         public IReadOnlyList<Invocation> Published => ChannelRecorder.CallsTo(nameof(IChannel.BasicPublishAsync));
+
+        private async Task<IConnection> ConnectAsync(CancellationToken cancellationToken)
+        {
+            if (ConnectGate is { } gate)
+            {
+                await gate.Task.WaitAsync(cancellationToken);
+            }
+
+            if (ConnectFailures.TryDequeue(out var failure))
+            {
+                throw failure;
+            }
+
+            return OpenConnection();
+        }
 
         private IConnection OpenConnection()
         {
