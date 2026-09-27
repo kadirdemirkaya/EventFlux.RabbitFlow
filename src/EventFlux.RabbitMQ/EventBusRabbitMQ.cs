@@ -17,6 +17,7 @@ namespace EventFlux.RabbitMQ
     public class EventBusRabbitMQ : SubscribeProcessEvent, IEventBroker, IDisposable, IAsyncDisposable
     {
         const string appName = "EventFlux_RabbitFlow";
+        const string RetryCountHeader = "x-retry-count";
 
         private readonly IPersistenceConnection _persistentConnection;
         private readonly RabbitFlowOptions _options;
@@ -28,6 +29,7 @@ namespace EventFlux.RabbitMQ
         private readonly Dictionary<string, string> _eventQueues = new Dictionary<string, string>();
         private readonly Dictionary<string, HashSet<string>> _eventExchanges = new Dictionary<string, HashSet<string>>();
         private readonly Dictionary<string, string> _consumerTags = new Dictionary<string, string>();
+        private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _queueEvents = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
         private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
         private IChannel? _consumerChannel;
         private bool _disposed;
@@ -61,6 +63,7 @@ namespace EventFlux.RabbitMQ
             _persistentConnection = persistentConnection ?? throw new ArgumentNullException(nameof(persistentConnection));
             _serviceName = serviceName ?? throw new ArgumentNullException(nameof(serviceName));
             _options = options ?? throw new ArgumentNullException(nameof(options));
+            _options.Validate();
             _exchangeName = _serviceName;
 
             _publishPolicy = Policy.Handle<BrokerUnreachableException>()
@@ -189,7 +192,9 @@ namespace EventFlux.RabbitMQ
 
         internal async Task HandleDeliveryAsync(IChannel channel, BasicDeliverEventArgs eventArgs)
         {
-            var eventName = eventArgs.RoutingKey;
+            var eventName = string.IsNullOrEmpty(eventArgs.Exchange) && _queueEvents.TryGetValue(eventArgs.RoutingKey, out var queueEvent)
+                ? queueEvent
+                : eventArgs.RoutingKey;
             var message = Encoding.UTF8.GetString(eventArgs.Body.Span);
             var cancellationToken = eventArgs.CancellationToken;
 
@@ -214,6 +219,12 @@ namespace EventFlux.RabbitMQ
 
         private async Task HandleFailureAsync(IChannel channel, BasicDeliverEventArgs eventArgs, string eventName, Exception exception)
         {
+            if (_options.LimitsDeliveries)
+            {
+                await HandleLimitedFailureAsync(channel, eventArgs, eventName, exception).ConfigureAwait(false);
+                return;
+            }
+
             if (_options.OnFailure == RabbitFlowFailureMode.DeadLetter)
             {
                 try
@@ -237,16 +248,103 @@ namespace EventFlux.RabbitMQ
             await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: true).ConfigureAwait(false);
         }
 
-        private async Task PublishToDeadLetterAsync(IChannel channel, BasicDeliverEventArgs eventArgs, string eventName, Exception exception)
+        private async Task HandleLimitedFailureAsync(IChannel channel, BasicDeliverEventArgs eventArgs, string eventName, Exception exception)
+        {
+            var retries = GetRetryCount(eventArgs.BasicProperties.Headers);
+            var attempt = retries + 1;
+            var queueName = $"{_serviceName}_{eventName}";
+
+            try
+            {
+                if (attempt < _options.MaxDeliveryAttempts)
+                {
+                    await PublishRetryAsync(channel, eventArgs, queueName, retries + 1).ConfigureAwait(false);
+                    await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false).ConfigureAwait(false);
+
+                    _logger.LogWarning(exception, "Error processing {EventName} (attempt {Attempt} of {MaxAttempts}), retrying the message", eventName, attempt, _options.MaxDeliveryAttempts);
+                    return;
+                }
+
+                await PublishToDeadLetterAsync(channel, eventArgs, eventName, exception).ConfigureAwait(false);
+                await channel.BasicAckAsync(eventArgs.DeliveryTag, multiple: false).ConfigureAwait(false);
+
+                _logger.LogError(exception, "Error processing {EventName} (attempt {Attempt} of {MaxAttempts}), the message was moved to the dead-letter queue", eventName, attempt, _options.MaxDeliveryAttempts);
+                return;
+            }
+            catch (Exception retryException)
+            {
+                _logger.LogError(retryException, "Could not retry or dead-letter {EventName}, requeueing the message", eventName);
+            }
+
+            await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: true).ConfigureAwait(false);
+        }
+
+        private async Task PublishRetryAsync(IChannel channel, BasicDeliverEventArgs eventArgs, string queueName, int retryCount)
+        {
+            var headers = CopyHeaders(eventArgs);
+            headers[RetryCountHeader] = retryCount;
+
+            var properties = new BasicProperties
+            {
+                DeliveryMode = DeliveryModes.Persistent,
+                Headers = headers
+            };
+
+            var routingKey = queueName;
+            if (_options.DelaysRedelivery)
+            {
+                properties.Expiration = ((long)_options.RedeliveryDelay.TotalMilliseconds).ToString(System.Globalization.CultureInfo.InvariantCulture);
+                routingKey = RabbitFlowOptions.GetRetryQueue(queueName);
+            }
+
+            await channel.BasicPublishAsync(
+                exchange: string.Empty,
+                routingKey: routingKey,
+                mandatory: true,
+                basicProperties: properties,
+                body: eventArgs.Body).ConfigureAwait(false);
+        }
+
+        private static Dictionary<string, object?> CopyHeaders(BasicDeliverEventArgs eventArgs)
         {
             var headers = eventArgs.BasicProperties.Headers is { } original
-                ? new Dictionary<string, object?>(original)
+                ? original.Where(h => !IsBrokerDeathHeader(h.Key)).ToDictionary(h => h.Key, h => h.Value)
                 : new Dictionary<string, object?>();
+
+            if (!headers.ContainsKey(RetryCountHeader) || !headers.ContainsKey("x-original-exchange"))
+            {
+                headers["x-original-exchange"] = eventArgs.Exchange;
+                headers["x-original-routing-key"] = eventArgs.RoutingKey;
+            }
+
+            return headers;
+        }
+
+        private static bool IsBrokerDeathHeader(string key)
+            => key == "x-death" || key.StartsWith("x-first-death-", StringComparison.Ordinal) || key.StartsWith("x-last-death-", StringComparison.Ordinal);
+
+        internal static int GetRetryCount(IDictionary<string, object?>? headers)
+        {
+            if (headers == null || !headers.TryGetValue(RetryCountHeader, out var value)) return 0;
+
+            return value switch
+            {
+                int i => Math.Max(i, 0),
+                long l => (int)Math.Clamp(l, 0, int.MaxValue),
+                short sh => Math.Max((int)sh, 0),
+                byte b => b,
+                byte[] bytes when int.TryParse(Encoding.UTF8.GetString(bytes), out var parsed) => Math.Max(parsed, 0),
+                string text when int.TryParse(text, out var parsed) => Math.Max(parsed, 0),
+                _ => 0
+            };
+        }
+
+        private async Task PublishToDeadLetterAsync(IChannel channel, BasicDeliverEventArgs eventArgs, string eventName, Exception exception)
+        {
+            var headers = CopyHeaders(eventArgs);
 
             headers["x-exception-type"] = exception.GetType().FullName;
             headers["x-exception-message"] = exception.Message;
-            headers["x-original-exchange"] = eventArgs.Exchange;
-            headers["x-original-routing-key"] = eventArgs.RoutingKey;
 
             var properties = new BasicProperties
             {
@@ -340,10 +438,25 @@ namespace EventFlux.RabbitMQ
                                             routingKey: eventName).ConfigureAwait(false);
             }
 
-            if (_options.OnFailure == RabbitFlowFailureMode.DeadLetter)
+            if (_options.UsesDeadLetter)
             {
                 await DeclareDeadLetterAsync(channel, queueName, eventName).ConfigureAwait(false);
             }
+
+            if (_options.DelaysRedelivery)
+            {
+                await channel.QueueDeclareAsync(queue: RabbitFlowOptions.GetRetryQueue(queueName),
+                                               durable: true,
+                                               exclusive: false,
+                                               autoDelete: false,
+                                               arguments: new Dictionary<string, object?>
+                                               {
+                                                   ["x-dead-letter-exchange"] = string.Empty,
+                                                   ["x-dead-letter-routing-key"] = queueName
+                                               }).ConfigureAwait(false);
+            }
+
+            _queueEvents[queueName] = eventName;
         }
 
         private async Task DeclareDeadLetterAsync(IChannel channel, string queueName, string eventName)

@@ -177,6 +177,24 @@ builder.Services.AddEventFluxRabbitFlow(assembly, connectionFactory, "orders_ser
 
 In dead-letter mode every event queue `{serviceName}_{EventName}` gets a durable `{serviceName}_{EventName}_dead_letter` queue bound to the dead-letter exchange (default `{serviceName}_dead_letter`) with the event name as routing key. Dead-lettered messages keep their body and headers and add `x-exception-type`, `x-exception-message`, `x-original-exchange` and `x-original-routing-key`.
 
+### Limiting delivery attempts
+
+By default a failing message is retried without limit, which keeps one poison message cycling through its queue. Set `MaxDeliveryAttempts` to move it to the dead-letter queue after a number of attempts (the first delivery counts as one), in either `OnFailure` mode:
+
+```csharp
+builder.Services.AddEventFluxRabbitFlow(assembly, connectionFactory, "orders_service", options =>
+{
+    options.MaxDeliveryAttempts = 5;
+    options.RedeliveryDelay = TimeSpan.FromSeconds(10);
+});
+```
+
+- A failed message is sent back to the end of its own queue with an `x-retry-count` header, and the original is acknowledged. Other services bound to the same exchange do not receive it again.
+- With `RedeliveryDelay` it first waits in a durable `{serviceName}_{EventName}_retry` queue and returns to the event queue when the delay has passed.
+- After the last attempt it goes to the dead-letter queue with the headers above plus `x-retry-count`; `x-original-exchange` and `x-original-routing-key` keep the first route.
+- If the retry or dead-letter publish fails, the message is requeued.
+- Every consumer of the queue must run 1.2.0 or later before you enable it: an older consumer does not recognise retried messages and acknowledges them without handling.
+
 A delivery cancelled by consumer shutdown is always requeued. A message for an event with no subscription is acknowledged and logged.
 
 ## Configuration
@@ -188,6 +206,8 @@ A delivery cancelled by consumer shutdown is always requeued. A message for an e
 | `DeadLetterExchange` | `{serviceName}_dead_letter` | Exchange used when `OnFailure` is `DeadLetter`. |
 | `PrefetchCount` | `0` (no limit) | Maximum unacknowledged messages per consumer channel. |
 | `AutoSubscribe` | `false` | Subscribes every handler in the scanned assembly when the host starts, and stops consuming when it stops. |
+| `MaxDeliveryAttempts` | `null` (no limit) | Attempts before a failing message is dead-lettered. See [Limiting delivery attempts](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow#limiting-delivery-attempts). |
+| `RedeliveryDelay` | `00:00:00` | Wait between attempts when `MaxDeliveryAttempts` is set. |
 
 Connection settings come from the `IConnectionFactory` passed to `AddEventFluxRabbitFlow`.
 
