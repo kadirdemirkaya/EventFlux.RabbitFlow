@@ -54,6 +54,16 @@ namespace EventFlux.RabbitMQ
             return await _connection!.CreateChannelAsync().ConfigureAwait(false);
         }
 
+        public async Task<IChannel> CreateChannelAsync(CreateChannelOptions? options, CancellationToken cancellationToken)
+        {
+            if (!IsConnected)
+            {
+                throw new InvalidOperationException("No RabbitMQ connections are available to perform this action");
+            }
+
+            return await _connection!.CreateChannelAsync(options, cancellationToken).ConfigureAwait(false);
+        }
+
         public void Dispose()
         {
             if (_disposed) return;

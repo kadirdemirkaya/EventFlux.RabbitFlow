@@ -42,6 +42,19 @@ namespace EventFlux.RabbitMQ
         /// </summary>
         public TimeSpan RedeliveryDelay { get; set; } = TimeSpan.Zero;
 
+        /// <summary>
+        /// Waits for the broker to confirm every publish, including retry and dead-letter publishes, and fails the publish
+        /// when the broker rejects it. Defaults to <see langword="false"/>.
+        /// </summary>
+        /// <remarks>
+        /// Retry and dead-letter publishes are always confirmed when <see cref="OnFailure"/> is
+        /// <see cref="RabbitFlowFailureMode.DeadLetter"/> or <see cref="MaxDeliveryAttempts"/> is set, whatever this value.
+        /// A published event that no queue is bound to is logged as a warning and does not fail. Retry and dead-letter
+        /// publishes that cannot be routed fail, and the message is requeued. Requires the built-in connection; a custom
+        /// <see cref="Abstractions.IPersistenceConnection"/> must implement the <c>CreateChannelAsync</c> overload that takes options.
+        /// </remarks>
+        public bool PublisherConfirms { get; set; }
+
         internal bool LimitsDeliveries => MaxDeliveryAttempts.HasValue;
 
         internal bool UsesDeadLetter => OnFailure == RabbitFlowFailureMode.DeadLetter || LimitsDeliveries;

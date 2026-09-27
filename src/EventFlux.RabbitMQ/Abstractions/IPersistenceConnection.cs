@@ -17,5 +17,13 @@ namespace EventFlux.RabbitMQ.Abstractions
         }
 
         Task<IChannel> CreateChannelAsync();
+
+        /// <summary>Creates a channel with the given options, for example with publisher confirmations enabled.</summary>
+        /// <remarks>The default implementation ignores <paramref name="options"/> and calls <see cref="CreateChannelAsync()"/>.</remarks>
+        Task<IChannel> CreateChannelAsync(CreateChannelOptions? options, CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            return CreateChannelAsync();
+        }
     }
 }
