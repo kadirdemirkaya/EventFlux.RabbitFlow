@@ -32,10 +32,13 @@ namespace EventFlux.RabbitMQ
         private readonly Dictionary<string, string> _consumerTags = new Dictionary<string, string>();
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _queueEvents = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
         private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
+        private readonly System.Collections.Concurrent.ConcurrentBag<IChannel> _publishChannels = new System.Collections.Concurrent.ConcurrentBag<IChannel>();
         private IChannel? _consumerChannel;
         private bool _disposed;
 
         internal Task ConsumerRecovery { get; private set; } = Task.CompletedTask;
+
+        internal int MaxIdlePublishChannels { get; set; } = 16;
 
         internal Func<int, TimeSpan> ConsumerRestoreDelay { get; set; } = attempt => TimeSpan.FromSeconds(Math.Min(Math.Pow(2, attempt), 30));
 
@@ -107,8 +110,9 @@ namespace EventFlux.RabbitMQ
             {
                 await EnsureConnectedAsync(ct).ConfigureAwait(false);
 
-                var channel = await CreateChannelAsync(ct).ConfigureAwait(false);
-                await using (channel.ConfigureAwait(false))
+                var channel = await RentPublishChannelAsync(ct).ConfigureAwait(false);
+                var reusable = false;
+                try
                 {
                     await channel.ExchangeDeclareAsync(exchange: targetExchange, type: ExchangeType.Direct, cancellationToken: ct).ConfigureAwait(false);
 
@@ -132,6 +136,12 @@ namespace EventFlux.RabbitMQ
                     {
                         _logger.LogWarning("{EventName} was published to {Exchange} but no queue is bound to it, the broker dropped the message", eventName, targetExchange);
                     }
+
+                    reusable = true;
+                }
+                finally
+                {
+                    await ReturnPublishChannelAsync(channel, reusable).ConfigureAwait(false);
                 }
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -186,6 +196,7 @@ namespace EventFlux.RabbitMQ
             _disposeCts.Cancel();
 
             _subsManager.OnEventRemoved -= SubsManager_OnEventRemoved;
+            DisposePublishChannelsAsync().GetAwaiter().GetResult();
             _consumerChannel?.Dispose();
             _subsManager.Clear();
         }
@@ -197,6 +208,7 @@ namespace EventFlux.RabbitMQ
             _disposeCts.Cancel();
 
             _subsManager.OnEventRemoved -= SubsManager_OnEventRemoved;
+            await DisposePublishChannelsAsync().ConfigureAwait(false);
             if (_consumerChannel != null)
             {
                 await _consumerChannel.DisposeAsync().ConfigureAwait(false);
@@ -346,6 +358,52 @@ namespace EventFlux.RabbitMQ
 
         private Task<IChannel> CreateChannelAsync(CancellationToken cancellationToken = default)
             => CreateChannelAsync(_options.PublisherConfirms, cancellationToken);
+
+        private async Task<IChannel> RentPublishChannelAsync(CancellationToken cancellationToken)
+        {
+            while (_publishChannels.TryTake(out var pooled))
+            {
+                if (pooled.IsOpen) return pooled;
+
+                await DisposeChannelAsync(pooled).ConfigureAwait(false);
+            }
+
+            return await CreateChannelAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private async Task ReturnPublishChannelAsync(IChannel channel, bool reusable)
+        {
+            if (reusable && !_disposed && channel.IsOpen && _publishChannels.Count < MaxIdlePublishChannels)
+            {
+                _publishChannels.Add(channel);
+
+                if (!_disposed) return;
+                if (!_publishChannels.TryTake(out var taken)) return;
+                channel = taken;
+            }
+
+            await DisposeChannelAsync(channel).ConfigureAwait(false);
+        }
+
+        private async Task DisposePublishChannelsAsync()
+        {
+            while (_publishChannels.TryTake(out var channel))
+            {
+                await DisposeChannelAsync(channel).ConfigureAwait(false);
+            }
+        }
+
+        private async Task DisposeChannelAsync(IChannel channel)
+        {
+            try
+            {
+                await channel.DisposeAsync().ConfigureAwait(false);
+            }
+            catch (Exception ex)
+            {
+                _logger.LogDebug(ex, "Could not dispose a RabbitMQ publish channel");
+            }
+        }
 
         private Task<IChannel> CreateChannelAsync(bool confirms, CancellationToken cancellationToken = default)
             => confirms

@@ -38,6 +38,21 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
 
         public bool ChannelIsOpen { get; set; } = true;
 
+        public bool DistinctChannels { get; set; }
+
+        public Func<FakeChannel, Task>? OnPublish { get; set; }
+
+        public ConcurrentQueue<FakeChannel> CreatedChannels { get; } = new();
+
+        internal IChannel NextChannel()
+        {
+            if (!DistinctChannels) return Channel;
+
+            var channel = new FakeChannel(this);
+            CreatedChannels.Enqueue(channel);
+            return channel.Channel;
+        }
+
         public RecordingProxy ChannelRecorder { get; }
 
         public IReadOnlyList<Invocation> Published => ChannelRecorder.CallsTo(nameof(IChannel.BasicPublishAsync));
@@ -66,6 +81,44 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
         }
     }
 
+    public class FakeChannel
+    {
+        private int _inUse;
+
+        public FakeChannel(FakeBroker broker)
+        {
+            (Channel, Recorder) = RecordingProxy.Create<IChannel>((method, _) => method.Name switch
+            {
+                "get_" + nameof(IChannel.IsOpen) => IsOpen,
+                nameof(IChannel.BasicPublishAsync) => new ValueTask(PublishAsync(broker)),
+                _ => null
+            });
+        }
+
+        public IChannel Channel { get; }
+
+        public RecordingProxy Recorder { get; }
+
+        public bool IsOpen { get; set; } = true;
+
+        public bool UsedConcurrently { get; private set; }
+
+        public int Disposals => Recorder.CallsTo(nameof(IAsyncDisposable.DisposeAsync)).Count + Recorder.CallsTo(nameof(IDisposable.Dispose)).Count;
+
+        private async Task PublishAsync(FakeBroker broker)
+        {
+            if (Interlocked.Increment(ref _inUse) > 1) UsedConcurrently = true;
+            try
+            {
+                if (broker.OnPublish is { } onPublish) await onPublish(this);
+            }
+            finally
+            {
+                Interlocked.Decrement(ref _inUse);
+            }
+        }
+    }
+
     public class FakeConnection
     {
         [ThreadStatic]
@@ -75,7 +128,7 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
         {
             (Connection, Recorder) = RecordingProxy.Create<IConnection>((method, _) => method.Name switch
             {
-                nameof(IConnection.CreateChannelAsync) => Task.FromResult(broker.Channel),
+                nameof(IConnection.CreateChannelAsync) => Task.FromResult(broker.NextChannel()),
                 "get_" + nameof(IConnection.IsOpen) => IsOpen,
                 nameof(IDisposable.Dispose) => MarkDisposed(),
                 _ => null
