@@ -28,10 +28,13 @@ namespace EventFlux.RabbitMQ
         private readonly Dictionary<string, string> _eventQueues = new Dictionary<string, string>();
         private readonly Dictionary<string, HashSet<string>> _eventExchanges = new Dictionary<string, HashSet<string>>();
         private readonly Dictionary<string, string> _consumerTags = new Dictionary<string, string>();
+        private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
         private IChannel? _consumerChannel;
         private bool _disposed;
 
         internal Task ConsumerRecovery { get; private set; } = Task.CompletedTask;
+
+        internal Func<int, TimeSpan> ConsumerRestoreDelay { get; set; } = attempt => TimeSpan.FromSeconds(Math.Min(Math.Pow(2, attempt), 30));
 
         public EventBusRabbitMQ(IPersistenceConnection persistentConnection,
             ILogger<IEventBroker> logger,
@@ -163,6 +166,7 @@ namespace EventFlux.RabbitMQ
         {
             if (_disposed) return;
             _disposed = true;
+            _disposeCts.Cancel();
 
             _subsManager.OnEventRemoved -= SubsManager_OnEventRemoved;
             _consumerChannel?.Dispose();
@@ -173,6 +177,7 @@ namespace EventFlux.RabbitMQ
         {
             if (_disposed) return;
             _disposed = true;
+            _disposeCts.Cancel();
 
             _subsManager.OnEventRemoved -= SubsManager_OnEventRemoved;
             if (_consumerChannel != null)
@@ -298,22 +303,7 @@ namespace EventFlux.RabbitMQ
                 var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
                 await using (channel.ConfigureAwait(false))
                 {
-                    await channel.ExchangeDeclareAsync(exchange: targetExchange, type: ExchangeType.Direct).ConfigureAwait(false);
-
-                    await channel.QueueDeclareAsync(queue: queueName,
-                                                   durable: true,
-                                                   exclusive: false,
-                                                   autoDelete: false,
-                                                   arguments: null).ConfigureAwait(false);
-
-                    await channel.QueueBindAsync(queue: queueName,
-                                                exchange: targetExchange,
-                                                routingKey: eventName).ConfigureAwait(false);
-
-                    if (_options.OnFailure == RabbitFlowFailureMode.DeadLetter)
-                    {
-                        await DeclareDeadLetterAsync(channel, queueName, eventName).ConfigureAwait(false);
-                    }
+                    await DeclareTopologyAsync(channel, eventName, queueName, new[] { targetExchange }).ConfigureAwait(false);
                 }
 
                 exchanges.Add(targetExchange);
@@ -327,6 +317,32 @@ namespace EventFlux.RabbitMQ
             finally
             {
                 _consumerLock.Release();
+            }
+        }
+
+        private async Task DeclareTopologyAsync(IChannel channel, string eventName, string queueName, IReadOnlyCollection<string> exchanges)
+        {
+            foreach (var exchange in exchanges)
+            {
+                await channel.ExchangeDeclareAsync(exchange: exchange, type: ExchangeType.Direct).ConfigureAwait(false);
+            }
+
+            await channel.QueueDeclareAsync(queue: queueName,
+                                           durable: true,
+                                           exclusive: false,
+                                           autoDelete: false,
+                                           arguments: null).ConfigureAwait(false);
+
+            foreach (var exchange in exchanges)
+            {
+                await channel.QueueBindAsync(queue: queueName,
+                                            exchange: exchange,
+                                            routingKey: eventName).ConfigureAwait(false);
+            }
+
+            if (_options.OnFailure == RabbitFlowFailureMode.DeadLetter)
+            {
+                await DeclareDeadLetterAsync(channel, queueName, eventName).ConfigureAwait(false);
             }
         }
 
@@ -373,20 +389,22 @@ namespace EventFlux.RabbitMQ
             return channel;
         }
 
-        private async Task OnConsumerCallbackExceptionAsync(object sender, CallbackExceptionEventArgs ea)
+        private Task OnConsumerCallbackExceptionAsync(object sender, CallbackExceptionEventArgs ea)
         {
-            if (_disposed) return;
+            if (_disposed) return Task.CompletedTask;
 
             _logger.LogWarning(ea.Exception, "Recreating RabbitMQ consumer channel");
 
-            await RestartConsumersAsync(sender).ConfigureAwait(false);
+            ConsumerRecovery = Task.Run(() => RestartConsumersAsync(sender));
+            return Task.CompletedTask;
         }
 
         private Task OnConsumerChannelShutdownAsync(object sender, ShutdownEventArgs reason)
         {
-            if (_disposed
-                || reason.Initiator == ShutdownInitiator.Application
-                || _persistentConnection is not PersistenceConnection { RecoversAutomatically: false })
+            if (_disposed || reason.Initiator == ShutdownInitiator.Application) return Task.CompletedTask;
+
+            var channelOnly = _persistentConnection.IsConnected;
+            if (!channelOnly && _persistentConnection is not PersistenceConnection { RecoversAutomatically: false })
             {
                 return Task.CompletedTask;
             }
@@ -402,25 +420,98 @@ namespace EventFlux.RabbitMQ
             await _consumerLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_disposed || !ReferenceEquals(closedChannel, _consumerChannel)) return;
+                if (_disposed || _consumerChannel == null) return;
+                if (!ReferenceEquals(closedChannel, _consumerChannel) && _consumerChannel.IsOpen) return;
 
-                _consumerChannel?.Dispose();
-                _consumerChannel = null;
-                _consumerTags.Clear();
-
-                foreach (var queueName in _eventQueues.Values.Distinct())
-                {
-                    await StartConsumerAsync(queueName).ConfigureAwait(false);
-                }
-            }
-            catch (Exception ex)
-            {
-                _logger.LogError(ex, "Could not recreate RabbitMQ consumer channel");
+                DropConsumerChannel();
             }
             finally
             {
                 _consumerLock.Release();
             }
+
+            for (var attempt = 1; !_disposed; attempt++)
+            {
+                try
+                {
+                    await RestoreConsumersAsync().ConfigureAwait(false);
+                    return;
+                }
+                catch (Exception ex) when (!_disposed)
+                {
+                    var delay = ConsumerRestoreDelay(attempt);
+                    _logger.LogError(ex, "Could not recreate RabbitMQ consumers, retrying in {Delay}s", $"{delay.TotalSeconds:n1}");
+
+                    try
+                    {
+                        await Task.Delay(delay, _disposeCts.Token).ConfigureAwait(false);
+                    }
+                    catch (OperationCanceledException)
+                    {
+                        return;
+                    }
+                }
+                catch (Exception)
+                {
+                    return;
+                }
+            }
+        }
+
+        private async Task RestoreConsumersAsync()
+        {
+            await _consumerLock.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_disposed) return;
+
+                if (_consumerChannel is not { IsOpen: true })
+                {
+                    DropConsumerChannel();
+                }
+
+                await EnsureConnectedAsync(_disposeCts.Token).ConfigureAwait(false);
+
+                var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
+                await using (channel.ConfigureAwait(false))
+                {
+                    foreach (var (eventName, queueName) in _eventQueues)
+                    {
+                        IReadOnlyCollection<string> exchanges = _eventExchanges.TryGetValue(eventName, out var bound) ? bound : Array.Empty<string>();
+                        await DeclareTopologyAsync(channel, eventName, queueName, exchanges).ConfigureAwait(false);
+                    }
+                }
+
+                foreach (var queueName in _eventQueues.Values.Distinct().Where(q => !_consumerTags.ContainsKey(q)))
+                {
+                    await StartConsumerAsync(queueName).ConfigureAwait(false);
+                }
+            }
+            finally
+            {
+                _consumerLock.Release();
+            }
+        }
+
+        private void DropConsumerChannel()
+        {
+            if (_consumerChannel != null)
+            {
+                _consumerChannel.CallbackExceptionAsync -= OnConsumerCallbackExceptionAsync;
+                _consumerChannel.ChannelShutdownAsync -= OnConsumerChannelShutdownAsync;
+
+                try
+                {
+                    _consumerChannel.Dispose();
+                }
+                catch (Exception ex)
+                {
+                    _logger.LogWarning(ex, "Could not dispose the previous RabbitMQ consumer channel");
+                }
+            }
+
+            _consumerChannel = null;
+            _consumerTags.Clear();
         }
 
         private Task Consumer_ReceivedAsync(object sender, BasicDeliverEventArgs eventArgs)
