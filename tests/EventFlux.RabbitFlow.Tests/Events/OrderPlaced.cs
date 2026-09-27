@@ -18,6 +18,8 @@ namespace EventFlux.RabbitFlow.Tests.Events
     public class HandledOrders
     {
         public ConcurrentQueue<(OrderPlaced Event, CancellationToken Token, EventFluxContext? Context)> Items { get; } = new();
+
+        public Func<Task>? BeforeHandle { get; set; }
     }
 
     public class OrderPlacedHandler : IEventHandler<OrderPlaced>
@@ -31,9 +33,14 @@ namespace EventFlux.RabbitFlow.Tests.Events
             _contextAccessor = contextAccessor;
         }
 
-        public Task Handle(OrderPlaced @event, CancellationToken cancellationToken)
+        public async Task Handle(OrderPlaced @event, CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
+
+            if (_handledOrders.BeforeHandle is { } beforeHandle)
+            {
+                await beforeHandle();
+            }
 
             if (@event.ShouldFail)
             {
@@ -41,7 +48,6 @@ namespace EventFlux.RabbitFlow.Tests.Events
             }
 
             _handledOrders.Items.Enqueue((@event, cancellationToken, _contextAccessor.Context));
-            return Task.CompletedTask;
         }
     }
 }

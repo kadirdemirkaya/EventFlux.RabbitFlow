@@ -33,8 +33,12 @@ namespace EventFlux.RabbitMQ
         private readonly System.Collections.Concurrent.ConcurrentDictionary<string, string> _queueEvents = new System.Collections.Concurrent.ConcurrentDictionary<string, string>();
         private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
         private readonly System.Collections.Concurrent.ConcurrentBag<IChannel> _publishChannels = new System.Collections.Concurrent.ConcurrentBag<IChannel>();
+        private readonly object _inFlightLock = new object();
         private IChannel? _consumerChannel;
         private bool _disposed;
+        private volatile bool _stopping;
+        private int _inFlight;
+        private TaskCompletionSource _idle = CreateIdleSource(completed: true);
 
         internal Task ConsumerRecovery { get; private set; } = Task.CompletedTask;
 
@@ -169,9 +173,14 @@ namespace EventFlux.RabbitMQ
             _subsManager.RemoveSubscription<T, TH>();
         }
 
-        /// <summary>Cancels every consumer so no new messages are delivered. In-flight messages finish normally.</summary>
+        /// <summary>
+        /// Cancels every consumer so no new messages are delivered, then waits until the messages already being handled
+        /// are acknowledged, or until <paramref name="cancellationToken"/> is cancelled.
+        /// </summary>
         public async Task StopConsumingAsync(CancellationToken cancellationToken = default)
         {
+            _stopping = true;
+
             await _consumerLock.WaitAsync(cancellationToken).ConfigureAwait(false);
             try
             {
@@ -189,11 +198,14 @@ namespace EventFlux.RabbitMQ
             {
                 _consumerLock.Release();
             }
+
+            await WaitForInFlightAsync(cancellationToken).ConfigureAwait(false);
         }
 
         public void Dispose()
         {
             if (_disposed) return;
+            DrainBeforeDisposeAsync().GetAwaiter().GetResult();
             _disposed = true;
             _disposeCts.Cancel();
 
@@ -206,6 +218,7 @@ namespace EventFlux.RabbitMQ
         public async ValueTask DisposeAsync()
         {
             if (_disposed) return;
+            await DrainBeforeDisposeAsync().ConfigureAwait(false);
             _disposed = true;
             _disposeCts.Cancel();
 
@@ -219,6 +232,103 @@ namespace EventFlux.RabbitMQ
         }
 
         internal async Task HandleDeliveryAsync(IChannel channel, BasicDeliverEventArgs eventArgs)
+        {
+            if (!TryEnterDelivery())
+            {
+                await channel.BasicNackAsync(eventArgs.DeliveryTag, multiple: false, requeue: true).ConfigureAwait(false);
+                return;
+            }
+
+            try
+            {
+                await ProcessDeliveryAsync(channel, eventArgs).ConfigureAwait(false);
+            }
+            finally
+            {
+                ExitDelivery();
+            }
+        }
+
+        private bool TryEnterDelivery()
+        {
+            lock (_inFlightLock)
+            {
+                if (_stopping) return false;
+
+                if (_inFlight++ == 0)
+                {
+                    _idle = CreateIdleSource(completed: false);
+                }
+
+                return true;
+            }
+        }
+
+        private void ExitDelivery()
+        {
+            lock (_inFlightLock)
+            {
+                if (--_inFlight == 0)
+                {
+                    _idle.TrySetResult();
+                }
+            }
+        }
+
+        private async Task WaitForInFlightAsync(CancellationToken cancellationToken)
+        {
+            Task idle;
+            int inFlight;
+            lock (_inFlightLock)
+            {
+                idle = _idle.Task;
+                inFlight = _inFlight;
+            }
+
+            if (inFlight == 0) return;
+
+            _logger.LogInformation("Waiting for {Count} RabbitMQ message(s) in progress to finish", inFlight);
+
+            try
+            {
+                await idle.WaitAsync(cancellationToken).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                lock (_inFlightLock)
+                {
+                    inFlight = _inFlight;
+                }
+
+                _logger.LogWarning("Stopped waiting for {Count} RabbitMQ message(s) in progress; they will be delivered again", inFlight);
+            }
+        }
+
+        private async Task DrainBeforeDisposeAsync()
+        {
+            using var timeout = new CancellationTokenSource(_options.ShutdownTimeout);
+
+            try
+            {
+                await StopConsumingAsync(timeout.Token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
+            catch (Exception ex)
+            {
+                _logger.LogWarning(ex, "Could not stop RabbitMQ consumers before disposing");
+            }
+        }
+
+        private static TaskCompletionSource CreateIdleSource(bool completed)
+        {
+            var source = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            if (completed) source.SetResult();
+            return source;
+        }
+
+        private async Task ProcessDeliveryAsync(IChannel channel, BasicDeliverEventArgs eventArgs)
         {
             var eventName = string.IsNullOrEmpty(eventArgs.Exchange) && _queueEvents.TryGetValue(eventArgs.RoutingKey, out var queueEvent)
                 ? queueEvent
@@ -565,6 +675,8 @@ namespace EventFlux.RabbitMQ
             var consumer = new AsyncEventingBasicConsumer(channel);
             consumer.ReceivedAsync += Consumer_ReceivedAsync;
 
+            _stopping = false;
+
             var consumerTag = await channel.BasicConsumeAsync(queue: queueName, autoAck: false, consumer: consumer).ConfigureAwait(false);
             _consumerTags[queueName] = consumerTag ?? string.Empty;
         }
@@ -665,7 +777,7 @@ namespace EventFlux.RabbitMQ
             await _consumerLock.WaitAsync().ConfigureAwait(false);
             try
             {
-                if (_disposed) return;
+                if (_disposed || _stopping) return;
 
                 if (_consumerChannel is not { IsOpen: true })
                 {

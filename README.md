@@ -213,8 +213,13 @@ A delivery cancelled by consumer shutdown is always requeued. A message for an e
 | `RedeliveryDelay` | `00:00:00` | Wait between attempts when `MaxDeliveryAttempts` is set. |
 | `PublisherConfirms` | `false` | `PublishAsync` completes only after the broker has confirmed the message. See [Publisher confirms](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow#publisher-confirms). |
 | `DeleteQueueOnUnsubscribe` | `false` | When the last handler of an event is unsubscribed, delete its queue (and retry queue) instead of only unbinding it. Messages still in the queue are then lost. |
+| `ShutdownTimeout` | `00:00:30` | How long disposing the broker waits for messages that are being handled. |
 
 Connection settings come from the `IConnectionFactory` passed to `AddEventFluxRabbitFlow`.
+
+### Shutdown
+
+When the host stops, consumers are cancelled first, messages that arrived but have not started are requeued, and the messages already being handled are allowed to finish and be acknowledged before the channel closes. With `AutoSubscribe` this happens within the host's shutdown timeout; otherwise when the service provider disposes the broker, within `ShutdownTimeout`. A message still running when the time is up is delivered again after the restart, so handlers should stay idempotent.
 
 ### Publisher confirms
 
