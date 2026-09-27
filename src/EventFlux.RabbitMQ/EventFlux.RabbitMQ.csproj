@@ -6,7 +6,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<PackageId>EventFlux.RabbitFlow</PackageId>
-		<Version>1.3.0</Version>
+		<Version>1.3.1</Version>
 		<Authors>Kadir Demirkaya</Authors>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<Description>Lightweight .NET library for event-driven applications, providing distributed event support and domain events with EventFlux and RabbitMQ.</Description>
@@ -16,7 +16,10 @@
 		<PackageTags>
 			CQRS;EventBus;EventSourcing;DistributedEvents;RabbitMQ;EventFlux;DomainEvents;.NET;MessageBroker;EventDriven
 		</PackageTags>
-		<PackageReleaseNotes>v1.3.0:
+		<PackageReleaseNotes>v1.3.1:
+			- Depends on EventFlux 2.1.1 (maintenance release, same API and behaviour as 2.1.0). No other changes
+
+			v1.3.0:
 			- Publishing reuses channels from a small pool instead of opening and closing one per message (about 5x faster sequential publishing, 2-3x with publisher confirms)
 			- Unsubscribe keeps the event queue and the messages waiting in it (unbinds it and cancels its consumer); the previous deletion is available with RabbitFlowOptions.DeleteQueueOnUnsubscribe
 			- Graceful shutdown: consumers stop first and messages being handled finish and are acknowledged before the channel closes, so they are no longer handled twice after a restart. Added RabbitFlowOptions.ShutdownTimeout (30 s) for disposal without AutoSubscribe
@@ -51,7 +54,7 @@
 			- Removed the "throw-fake-exception" test hook from the consumer
 			- Log messages are in English and use structured templates
 			- Message format is unchanged: same JSON bodies, routing key = event type name, same exchange and queue names</PackageReleaseNotes>
-		<AssemblyInformationalVersion>1.3.0</AssemblyInformationalVersion>
+		<AssemblyInformationalVersion>1.3.1</AssemblyInformationalVersion>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 	</PropertyGroup>
@@ -66,7 +69,7 @@
 	</ItemGroup>
 
 	<ItemGroup>
-		<PackageReference Include="EventFlux" Version="2.1.0" />
+		<PackageReference Include="EventFlux" Version="2.1.1" />
 		<PackageReference Include="Newtonsoft.Json" Version="13.0.3" />
 		<PackageReference Include="Polly" Version="8.5.2" />
 		<PackageReference Include="RabbitMQ.Client" Version="7.1.2" />

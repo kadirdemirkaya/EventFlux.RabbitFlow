@@ -3,7 +3,7 @@
 EventFlux.RabbitFlow carries EventFlux events across services over RabbitMQ: publish an `IEventRequest` in one service and its `IEventHandler<T>` runs in another.
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.3.0
+dotnet add package EventFlux.RabbitFlow --version 1.3.1
 ```
 
 ```csharp
@@ -33,19 +33,19 @@ await eventBroker.PublishAsync(new OrderPlaced { OrderId = orderId }, cancellati
 ## Requirements
 
 - .NET 8.0, 9.0 or 10.0
-- EventFlux 2.1.0 or later
+- EventFlux 2.1.1 or later
 - A RabbitMQ broker reachable from your application
 
 ## Installation
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.3.0
+dotnet add package EventFlux.RabbitFlow --version 1.3.1
 ```
 
 or in your `.csproj`:
 
 ```xml
-<PackageReference Include="EventFlux.RabbitFlow" Version="1.3.0" />
+<PackageReference Include="EventFlux.RabbitFlow" Version="1.3.1" />
 ```
 
 ## Quick Start
@@ -260,6 +260,10 @@ await _eventBroker.SubscribeAsync<ExampleEventRequest, ExampleEventRequestHandle
 
 Messages are JSON bodies with the event type name as routing key, persisted on a direct exchange named after the service. Each subscribing service consumes from a durable queue named `{serviceName}_{EventName}`. The format is the same as in 1.0.x, so services on 1.0.x, 1.1.x, 1.2.x and 1.3.x can exchange messages. A retried message (see `MaxDeliveryAttempts`) is sent back to its own queue with the queue name as routing key; only 1.2.0 or later consumers understand it.
 
+## Upgrading from 1.3.0
+
+1.3.1 only moves the EventFlux dependency to 2.1.1, a maintenance release with the same API and behaviour as 2.1.0. No code changes are needed.
+
 ## Upgrading from 1.2.x
 
 1.3.0 needs no code changes. Changes in behaviour:
@@ -281,7 +285,7 @@ New opt-in options: `MaxDeliveryAttempts`, `RedeliveryDelay` and `PublisherConfi
 
 ## Upgrading from 1.0.x
 
-- Reference EventFlux 2.1.0 or later and target .NET 8.0, 9.0 or 10.0.
+- Reference EventFlux 2.1.1 or later and target .NET 8.0, 9.0 or 10.0.
 - Change handlers to `Handle(TEvent @event, CancellationToken cancellationToken)`.
 - Resolve `IEventBroker` from `app.Services` (or use `AutoSubscribe`) instead of building a second service provider with `builder.Services.BuildServiceProvider()`.
 - A failing handler no longer acknowledges its message. Make handlers idempotent, or use `OnFailure = DeadLetter` to stop a failing message from being retried.
