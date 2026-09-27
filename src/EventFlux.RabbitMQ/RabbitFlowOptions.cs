@@ -55,6 +55,13 @@ namespace EventFlux.RabbitMQ
         /// </remarks>
         public bool PublisherConfirms { get; set; }
 
+        /// <summary>
+        /// Deletes the event queue (and its retry queue) when the last handler of an event is unsubscribed, dropping any
+        /// messages still in it. Defaults to <see langword="false"/>: the queue is unbound and its consumer cancelled, and
+        /// waiting messages are kept for the next subscription. The dead-letter queue is never deleted.
+        /// </summary>
+        public bool DeleteQueueOnUnsubscribe { get; set; }
+
         internal bool LimitsDeliveries => MaxDeliveryAttempts.HasValue;
 
         internal bool UsesDeadLetter => OnFailure == RabbitFlowFailureMode.DeadLetter || LimitsDeliveries;
