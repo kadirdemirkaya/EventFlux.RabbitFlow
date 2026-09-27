@@ -6,7 +6,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<PackageId>EventFlux.RabbitFlow</PackageId>
-		<Version>1.2.0</Version>
+		<Version>1.3.0</Version>
 		<Authors>Kadir Demirkaya</Authors>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<Description>Lightweight .NET library for event-driven applications, providing distributed event support and domain events with EventFlux and RabbitMQ.</Description>
@@ -16,7 +16,15 @@
 		<PackageTags>
 			CQRS;EventBus;EventSourcing;DistributedEvents;RabbitMQ;EventFlux;DomainEvents;.NET;MessageBroker;EventDriven
 		</PackageTags>
-		<PackageReleaseNotes>v1.2.0:
+		<PackageReleaseNotes>v1.3.0:
+			- Publishing reuses channels from a small pool instead of opening and closing one per message (about 5x faster sequential publishing, 2-3x with publisher confirms)
+			- Unsubscribe keeps the event queue and the messages waiting in it (unbinds it and cancels its consumer); the previous deletion is available with RabbitFlowOptions.DeleteQueueOnUnsubscribe
+			- Graceful shutdown: consumers stop first and messages being handled finish and are acknowledged before the channel closes, so they are no longer handled twice after a restart. Added RabbitFlowOptions.ShutdownTimeout (30 s) for disposal without AutoSubscribe
+			- EventBusSubscriptionsManager is thread safe: concurrent subscriptions no longer make every message of an event fail, handler lists are snapshots, and an unknown event returns no handlers instead of throwing
+			- A stopped broker no longer resumes consuming after a channel is closed
+			- Message format unchanged; no API removed
+
+			v1.2.0:
 			- Connecting no longer blocks a thread: added IPersistenceConnection.TryConnectAsync(CancellationToken) (default implementation calls TryConnect), used by publish and subscribe. The token passed to PublishAsync also cancels waiting for the broker, and disposing the connection stops a reconnect in progress
 			- Fixed message loss after a broker restart without automatic recovery: exchanges, queues, bindings and dead-letter queues are declared again before consumers restart
 			- Fixed consumers never restarting after the broker closed the consumer channel while automatic recovery was enabled (the default)
@@ -43,7 +51,7 @@
 			- Removed the "throw-fake-exception" test hook from the consumer
 			- Log messages are in English and use structured templates
 			- Message format is unchanged: same JSON bodies, routing key = event type name, same exchange and queue names</PackageReleaseNotes>
-		<AssemblyInformationalVersion>1.2.0</AssemblyInformationalVersion>
+		<AssemblyInformationalVersion>1.3.0</AssemblyInformationalVersion>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 	</PropertyGroup>

@@ -3,7 +3,7 @@
 EventFlux.RabbitFlow carries EventFlux events across services over RabbitMQ: publish an `IEventRequest` in one service and its `IEventHandler<T>` runs in another.
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.2.0
+dotnet add package EventFlux.RabbitFlow --version 1.3.0
 ```
 
 ```csharp
@@ -24,6 +24,8 @@ await eventBroker.PublishAsync(new OrderPlaced { OrderId = orderId }, cancellati
 - A failing handler never loses its message: it is requeued or moved to a dead-letter queue
 - Optional limit on delivery attempts, with a delay between attempts
 - Optional publisher confirms
+- Channels are reused for publishing
+- Graceful shutdown: messages being handled finish before the consumer stops
 - Recovers from connection loss, broker restarts and closed channels without losing consumers or bindings
 - Context propagation through message headers
 - Cancellation support from publish to handler
@@ -37,13 +39,13 @@ await eventBroker.PublishAsync(new OrderPlaced { OrderId = orderId }, cancellati
 ## Installation
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.2.0
+dotnet add package EventFlux.RabbitFlow --version 1.3.0
 ```
 
 or in your `.csproj`:
 
 ```xml
-<PackageReference Include="EventFlux.RabbitFlow" Version="1.2.0" />
+<PackageReference Include="EventFlux.RabbitFlow" Version="1.3.0" />
 ```
 
 ## Quick Start
@@ -256,7 +258,15 @@ await _eventBroker.SubscribeAsync<ExampleEventRequest, ExampleEventRequestHandle
 
 ## Message format
 
-Messages are JSON bodies with the event type name as routing key, persisted on a direct exchange named after the service. Each subscribing service consumes from a durable queue named `{serviceName}_{EventName}`. The format is the same as in 1.0.x, so services on 1.0.x, 1.1.x and 1.2.x can exchange messages. A retried message (see `MaxDeliveryAttempts`) is sent back to its own queue with the queue name as routing key; only 1.2.0 or later consumers understand it.
+Messages are JSON bodies with the event type name as routing key, persisted on a direct exchange named after the service. Each subscribing service consumes from a durable queue named `{serviceName}_{EventName}`. The format is the same as in 1.0.x, so services on 1.0.x, 1.1.x, 1.2.x and 1.3.x can exchange messages. A retried message (see `MaxDeliveryAttempts`) is sent back to its own queue with the queue name as routing key; only 1.2.0 or later consumers understand it.
+
+## Upgrading from 1.2.x
+
+1.3.0 needs no code changes. Changes in behaviour:
+
+- `Unsubscribe` no longer deletes the event queue when its last handler is removed: the queue is unbound and its consumer cancelled, and messages still waiting are kept for the next subscription. Set `DeleteQueueOnUnsubscribe = true` for the previous behaviour. Queues of events you no longer subscribe to stay on the broker until you delete them.
+- On shutdown, messages that are being handled finish and are acknowledged before the channel closes, instead of being delivered again after the restart. Without `AutoSubscribe` this happens when the broker is disposed, bounded by `ShutdownTimeout` (30 seconds).
+- Publishing reuses channels, so an application keeps up to 16 idle publish channels open instead of opening one per message.
 
 ## Upgrading from 1.1.x
 
