@@ -13,7 +13,8 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
         {
             _nextConnection = new FakeConnection(this);
 
-            (Channel, ChannelRecorder) = RecordingProxy.Create<IChannel>();
+            (Channel, ChannelRecorder) = RecordingProxy.Create<IChannel>((method, _) =>
+                method.Name == "get_" + nameof(IChannel.IsOpen) ? ChannelIsOpen : null);
 
             (ConnectionFactory, _) = RecordingProxy.Create<IConnectionFactory>((method, args) =>
                 method.Name == nameof(IConnectionFactory.CreateConnectionAsync) ? ConnectAsync((CancellationToken)args[^1]!) : null);
@@ -34,6 +35,8 @@ namespace EventFlux.RabbitFlow.Tests.Fakes
         private FakeConnection Current => _connections.Count > 0 ? _connections[^1] : _nextConnection;
 
         public IChannel Channel { get; }
+
+        public bool ChannelIsOpen { get; set; } = true;
 
         public RecordingProxy ChannelRecorder { get; }
 

@@ -206,7 +206,7 @@ namespace EventFlux.RabbitFlow.Tests
             var consumes = fake.ChannelRecorder.CallsTo(nameof(IChannel.BasicConsumeAsync));
             Assert.Equal(2, consumes.Count);
             Assert.Equal($"{TestHost.ServiceName}_{nameof(OrderPlaced)}", consumes[1].Arg<string>("queue"));
-            Assert.Single(fake.Connections[1].Recorder.CallsTo(nameof(IConnection.CreateChannelAsync)));
+            Assert.Equal(2, fake.Connections[1].Recorder.CallsTo(nameof(IConnection.CreateChannelAsync)).Count);
         }
 
         [Fact]
@@ -217,6 +217,7 @@ namespace EventFlux.RabbitFlow.Tests
             await using var _ = provider;
             await broker.SubscribeAsync<OrderPlaced, OrderPlacedHandler>();
             var shutdownHandler = (AsyncEventHandler<ShutdownEventArgs>)fake.ChannelRecorder.CallsTo("add_" + nameof(IChannel.ChannelShutdownAsync)).Single().Args[0]!;
+            fake.Connections[0].IsOpen = false;
 
             await shutdownHandler(fake.Channel, PeerShutdown());
             await broker.ConsumerRecovery;
