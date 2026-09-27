@@ -18,6 +18,7 @@ namespace EventFlux.RabbitMQ
     {
         const string appName = "EventFlux_RabbitFlow";
         const string RetryCountHeader = "x-retry-count";
+        const string PublishSequenceHeader = "x-dotnet-pub-seq-no";
 
         private readonly IPersistenceConnection _persistentConnection;
         private readonly RabbitFlowOptions _options;
@@ -70,12 +71,18 @@ namespace EventFlux.RabbitMQ
                 .Or<SocketException>()
                 .Or<AlreadyClosedException>()
                 .Or<InvalidOperationException>(_ => !_persistentConnection.IsConnected)
+                .Or<PublishException>(ex => !ex.IsReturn)
                 .WaitAndRetryAsync(_options.RetryCount, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (ex, time) =>
                 {
                     _logger.LogWarning(ex, "Could not publish event after {TimeOut}s ({ExceptionMessage})", $"{time.TotalSeconds:n1}", ex.Message);
                 });
 
             _subsManager.OnEventRemoved += SubsManager_OnEventRemoved;
+
+            if (_options.PublisherConfirms && _persistentConnection is not PersistenceConnection)
+            {
+                _logger.LogWarning("PublisherConfirms is enabled with a custom {ConnectionType}; confirmations only apply if it implements CreateChannelAsync(CreateChannelOptions, CancellationToken)", _persistentConnection.GetType().Name);
+            }
         }
 
         public Task PublishAsync(IEventRequest @event)
@@ -100,7 +107,7 @@ namespace EventFlux.RabbitMQ
             {
                 await EnsureConnectedAsync(ct).ConfigureAwait(false);
 
-                var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
+                var channel = await CreateChannelAsync(ct).ConfigureAwait(false);
                 await using (channel.ConfigureAwait(false))
                 {
                     await channel.ExchangeDeclareAsync(exchange: targetExchange, type: ExchangeType.Direct, cancellationToken: ct).ConfigureAwait(false);
@@ -111,13 +118,20 @@ namespace EventFlux.RabbitMQ
                         Headers = headers
                     };
 
-                    await channel.BasicPublishAsync(
-                        exchange: targetExchange,
-                        routingKey: eventName,
-                        mandatory: true,
-                        basicProperties: properties,
-                        body: body,
-                        cancellationToken: ct).ConfigureAwait(false);
+                    try
+                    {
+                        await channel.BasicPublishAsync(
+                            exchange: targetExchange,
+                            routingKey: eventName,
+                            mandatory: true,
+                            basicProperties: properties,
+                            body: body,
+                            cancellationToken: ct).ConfigureAwait(false);
+                    }
+                    catch (PublishException ex) when (ex.IsReturn)
+                    {
+                        _logger.LogWarning("{EventName} was published to {Exchange} but no queue is bound to it, the broker dropped the message", eventName, targetExchange);
+                    }
                 }
             }, cancellationToken).ConfigureAwait(false);
         }
@@ -200,7 +214,7 @@ namespace EventFlux.RabbitMQ
 
             try
             {
-                await ProcessEvent(eventName, message, eventArgs.BasicProperties.Headers, cancellationToken).ConfigureAwait(false);
+                await ProcessEvent(eventName, message, WithoutTransportHeaders(eventArgs.BasicProperties.Headers), cancellationToken).ConfigureAwait(false);
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
@@ -321,7 +335,22 @@ namespace EventFlux.RabbitMQ
         }
 
         private static bool IsBrokerDeathHeader(string key)
-            => key == "x-death" || key.StartsWith("x-first-death-", StringComparison.Ordinal) || key.StartsWith("x-last-death-", StringComparison.Ordinal);
+            => key == "x-death" || key == PublishSequenceHeader || key.StartsWith("x-first-death-", StringComparison.Ordinal) || key.StartsWith("x-last-death-", StringComparison.Ordinal);
+
+        private static IDictionary<string, object?>? WithoutTransportHeaders(IDictionary<string, object?>? headers)
+        {
+            if (headers == null || !headers.ContainsKey(PublishSequenceHeader)) return headers;
+
+            return headers.Where(h => h.Key != PublishSequenceHeader).ToDictionary(h => h.Key, h => h.Value);
+        }
+
+        private Task<IChannel> CreateChannelAsync(CancellationToken cancellationToken = default)
+            => CreateChannelAsync(_options.PublisherConfirms, cancellationToken);
+
+        private Task<IChannel> CreateChannelAsync(bool confirms, CancellationToken cancellationToken = default)
+            => confirms
+                ? _persistentConnection.CreateChannelAsync(new CreateChannelOptions(publisherConfirmationsEnabled: true, publisherConfirmationTrackingEnabled: true), cancellationToken)
+                : _persistentConnection.CreateChannelAsync();
 
         internal static int GetRetryCount(IDictionary<string, object?>? headers)
         {
@@ -488,7 +517,7 @@ namespace EventFlux.RabbitMQ
 
             _logger.LogTrace("Creating RabbitMQ consumer channel");
 
-            var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
+            var channel = await CreateChannelAsync(_options.PublisherConfirms || _options.UsesDeadLetter).ConfigureAwait(false);
 
             if (_options.PrefetchCount > 0)
             {

@@ -208,8 +208,21 @@ A delivery cancelled by consumer shutdown is always requeued. A message for an e
 | `AutoSubscribe` | `false` | Subscribes every handler in the scanned assembly when the host starts, and stops consuming when it stops. |
 | `MaxDeliveryAttempts` | `null` (no limit) | Attempts before a failing message is dead-lettered. See [Limiting delivery attempts](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow#limiting-delivery-attempts). |
 | `RedeliveryDelay` | `00:00:00` | Wait between attempts when `MaxDeliveryAttempts` is set. |
+| `PublisherConfirms` | `false` | `PublishAsync` completes only after the broker has confirmed the message. See [Publisher confirms](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow#publisher-confirms). |
 
 Connection settings come from the `IConnectionFactory` passed to `AddEventFluxRabbitFlow`.
+
+### Publisher confirms
+
+With `PublisherConfirms = true`, `PublishAsync` waits until the broker has taken responsibility for the message:
+
+- A message the broker rejects is retried like a connection failure, and the `PublishException` is thrown when `RetryCount` is exhausted.
+- An event that no queue is bound to (no subscriber yet) is logged as a warning and does not fail.
+- Messages carry an extra `x-dotnet-pub-seq-no` header added by the client. It is not passed to handlers, and older consumers ignore it.
+
+Retry and dead-letter publishes made by the consumer are always confirmed when `OnFailure = DeadLetter` or `MaxDeliveryAttempts` is set: the original message is acknowledged only after the broker has accepted the copy, and if the copy cannot be routed (for example, the dead-letter queue was deleted) the original is requeued instead of lost.
+
+Confirmations need the built-in connection. A custom `IPersistenceConnection` must implement `CreateChannelAsync(CreateChannelOptions, CancellationToken)`; otherwise channels are created without confirmations and a warning is logged.
 
 ### Connection recovery
 
