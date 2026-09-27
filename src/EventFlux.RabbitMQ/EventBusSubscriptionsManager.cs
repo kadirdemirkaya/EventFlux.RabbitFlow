@@ -1,50 +1,74 @@
 ﻿using EventFlux.Abstractions;
 using EventFlux.RabbitMQ.Abstractions;
-using System.Collections.Concurrent;
 
 namespace EventFlux.RabbitMQ
 {
-    public partial class EventBusSubscriptionsManager : IEventBusSubscriptionsManager
+    public class EventBusSubscriptionsManager : IEventBusSubscriptionsManager
     {
-        private readonly ConcurrentDictionary<string, List<SubscriptionInfo>> _handlers;
-        private readonly List<Type> _eventTypes;
+        private readonly object _sync = new object();
+        private readonly Dictionary<string, List<SubscriptionInfo>> _handlers;
+        private readonly Dictionary<string, List<Type>> _eventTypes;
 
         public event EventHandler<string> OnEventRemoved;
 
         public EventBusSubscriptionsManager()
         {
-            _handlers = new ConcurrentDictionary<string, List<SubscriptionInfo>>();
-            _eventTypes = new List<Type>();
+            _handlers = new Dictionary<string, List<SubscriptionInfo>>();
+            _eventTypes = new Dictionary<string, List<Type>>();
         }
 
-        public bool IsEmpty => !_handlers.Keys.Any();
-        public void Clear() => _handlers.Clear();
+        public bool IsEmpty
+        {
+            get
+            {
+                lock (_sync)
+                {
+                    return _handlers.Count == 0;
+                }
+            }
+        }
 
+        public void Clear()
+        {
+            lock (_sync)
+            {
+                _handlers.Clear();
+                _eventTypes.Clear();
+            }
+        }
 
         public void AddSubscription<T, TH>()
             where T : IEventRequest
             where TH : IEventHandler<T>
         {
             var eventName = GetEventKey<T>();
+            var handlerType = typeof(TH);
 
-            AddSubscription(typeof(TH), eventName);
-
-            if (!_eventTypes.Contains(typeof(T)))
+            lock (_sync)
             {
-                _eventTypes.Add(typeof(T));
-            }
-        }
+                if (_handlers.TryGetValue(eventName, out var handlers) && handlers.Any(s => s.HandlerType == handlerType))
+                {
+                    throw new ArgumentException($"Handler Type {handlerType.Name} already registered for '{eventName}'", nameof(TH));
+                }
 
-        private void AddSubscription(Type handlerType, string eventName)
-        {
-            var handlersList = _handlers.GetOrAdd(eventName, _ => new List<SubscriptionInfo>());
+                if (handlers == null)
+                {
+                    handlers = new List<SubscriptionInfo>();
+                    _handlers[eventName] = handlers;
+                }
 
-            lock (handlersList)
-            {
-                if (handlersList.Any(s => s.HandlerType == handlerType))
-                    throw new ArgumentException($"Handler Type {handlerType.Name} already registered for '{eventName}'", nameof(handlerType));
+                handlers.Add(SubscriptionInfo.Typed(handlerType));
 
-                handlersList.Add(SubscriptionInfo.Typed(handlerType));
+                if (!_eventTypes.TryGetValue(eventName, out var types))
+                {
+                    types = new List<Type>();
+                    _eventTypes[eventName] = types;
+                }
+
+                if (!types.Contains(typeof(T)))
+                {
+                    types.Add(typeof(T));
+                }
             }
         }
 
@@ -52,80 +76,71 @@ namespace EventFlux.RabbitMQ
             where T : IEventRequest
             where TH : IEventHandler<T>
         {
-            var handlerToRemove = FindSubscriptionToRemove<T, TH>();
             var eventName = GetEventKey<T>();
-            RemoveHandler(eventName, handlerToRemove);
-        }
+            var handlerType = typeof(TH);
+            var eventRemoved = false;
 
-        private void RemoveHandler(string eventName, SubscriptionInfo subsToRemove)
-        {
-            if (subsToRemove != null)
+            lock (_sync)
             {
-                if (_handlers.TryGetValue(eventName, out var handlersList))
+                if (!_handlers.TryGetValue(eventName, out var handlers)) return;
+
+                var subscription = handlers.SingleOrDefault(s => s.HandlerType == handlerType);
+                if (subscription == null) return;
+
+                handlers.Remove(subscription);
+
+                if (handlers.Count == 0)
                 {
-                    lock (handlersList)
-                    {
-                        handlersList.Remove(subsToRemove);
-
-                        if (!handlersList.Any())
-                        {
-                            _handlers.TryRemove(eventName, out _);
-
-                            var eventType = _eventTypes.SingleOrDefault(e => e.Name == eventName);
-                            if (eventType != null)
-                            {
-                                lock (_eventTypes)
-                                {
-                                    _eventTypes.Remove(eventType);
-                                }
-                            }
-
-                            RaiseOnEventRemoved(eventName);
-                        }
-                    }
+                    _handlers.Remove(eventName);
+                    _eventTypes.Remove(eventName);
+                    eventRemoved = true;
                 }
+            }
+
+            if (eventRemoved)
+            {
+                OnEventRemoved?.Invoke(this, eventName);
             }
         }
 
         public IEnumerable<SubscriptionInfo> GetHandlersForEvent<T>() where T : IEventRequest
-        {
-            var key = GetEventKey<T>();
-            return GetHandlersForEvent(key);
-        }
-        public IEnumerable<SubscriptionInfo> GetHandlersForEvent(string eventName) => _handlers[eventName];
+            => GetHandlersForEvent(GetEventKey<T>());
 
-        private void RaiseOnEventRemoved(string eventName)
+        public IEnumerable<SubscriptionInfo> GetHandlersForEvent(string eventName)
         {
-            var handler = OnEventRemoved;
-            handler?.Invoke(this, eventName);
-        }
-        private SubscriptionInfo FindSubscriptionToRemove<T, TH>()
-            where T : IEventRequest
-            where TH : IEventHandler<T>
-        {
-            var eventName = GetEventKey<T>();
-            return FindSubscriptionToRemove(eventName, typeof(TH));
-        }
-
-        private SubscriptionInfo FindSubscriptionToRemove(string eventName, Type handlerType)
-        {
-            if (!HasSubscriptionsForEvent(eventName))
+            lock (_sync)
             {
-                return null;
+                return _handlers.TryGetValue(eventName, out var handlers)
+                    ? handlers.ToArray()
+                    : Array.Empty<SubscriptionInfo>();
             }
-
-            return _handlers[eventName].SingleOrDefault(s => s.HandlerType == handlerType);
-
         }
 
         public bool HasSubscriptionsForEvent<T>() where T : IEventRequest
-        {
-            var key = GetEventKey<T>();
-            return HasSubscriptionsForEvent(key);
-        }
-        public bool HasSubscriptionsForEvent(string eventName) => _handlers.ContainsKey(eventName);
+            => HasSubscriptionsForEvent(GetEventKey<T>());
 
-        public Type GetEventTypeByName(string eventName) => _eventTypes.SingleOrDefault(t => t.Name == eventName);
+        public bool HasSubscriptionsForEvent(string eventName)
+        {
+            lock (_sync)
+            {
+                return _handlers.ContainsKey(eventName);
+            }
+        }
+
+        public Type GetEventTypeByName(string eventName)
+        {
+            lock (_sync)
+            {
+                if (!_eventTypes.TryGetValue(eventName, out var types)) return null;
+
+                if (types.Count > 1)
+                {
+                    throw new InvalidOperationException($"Event name '{eventName}' is used by more than one event type: {string.Join(", ", types.Select(t => t.FullName))}");
+                }
+
+                return types[0];
+            }
+        }
 
         public string GetEventKey<T>()
         {
