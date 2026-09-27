@@ -62,6 +62,12 @@ namespace EventFlux.RabbitMQ
         /// </summary>
         public bool DeleteQueueOnUnsubscribe { get; set; }
 
+        /// <summary>
+        /// How long disposing the broker waits for messages that are being handled to be acknowledged. Defaults to 30 seconds.
+        /// With <see cref="AutoSubscribe"/> the host's shutdown timeout applies first.
+        /// </summary>
+        public TimeSpan ShutdownTimeout { get; set; } = TimeSpan.FromSeconds(30);
+
         internal bool LimitsDeliveries => MaxDeliveryAttempts.HasValue;
 
         internal bool UsesDeadLetter => OnFailure == RabbitFlowFailureMode.DeadLetter || LimitsDeliveries;
@@ -73,6 +79,11 @@ namespace EventFlux.RabbitMQ
             if (MaxDeliveryAttempts is < 1)
             {
                 throw new ArgumentOutOfRangeException(nameof(MaxDeliveryAttempts), MaxDeliveryAttempts, "MaxDeliveryAttempts must be at least 1.");
+            }
+
+            if (ShutdownTimeout < TimeSpan.Zero && ShutdownTimeout != Timeout.InfiniteTimeSpan)
+            {
+                throw new ArgumentOutOfRangeException(nameof(ShutdownTimeout), ShutdownTimeout, "ShutdownTimeout must not be negative.");
             }
 
             if (RedeliveryDelay < TimeSpan.Zero || RedeliveryDelay.TotalMilliseconds > uint.MaxValue)
