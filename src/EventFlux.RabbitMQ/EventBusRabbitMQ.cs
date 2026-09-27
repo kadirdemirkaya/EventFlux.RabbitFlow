@@ -92,7 +92,7 @@ namespace EventFlux.RabbitMQ
 
             await _publishPolicy.ExecuteAsync(async ct =>
             {
-                EnsureConnected();
+                await EnsureConnectedAsync(ct).ConfigureAwait(false);
 
                 var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
                 await using (channel.ConfigureAwait(false))
@@ -269,11 +269,11 @@ namespace EventFlux.RabbitMQ
             return context.Items.ToDictionary(item => item.Key, item => (object?)item.Value);
         }
 
-        private void EnsureConnected()
+        private async Task EnsureConnectedAsync(CancellationToken cancellationToken)
         {
             if (!_persistentConnection.IsConnected)
             {
-                _persistentConnection.TryConnect();
+                await _persistentConnection.TryConnectAsync(cancellationToken).ConfigureAwait(false);
             }
         }
 
@@ -293,7 +293,7 @@ namespace EventFlux.RabbitMQ
 
                 if (exchanges.Contains(targetExchange) && _consumerTags.ContainsKey(queueName)) return;
 
-                EnsureConnected();
+                await EnsureConnectedAsync(CancellationToken.None).ConfigureAwait(false);
 
                 var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
                 await using (channel.ConfigureAwait(false))
@@ -355,7 +355,7 @@ namespace EventFlux.RabbitMQ
         {
             if (_consumerChannel is { IsOpen: true }) return _consumerChannel;
 
-            EnsureConnected();
+            await EnsureConnectedAsync(CancellationToken.None).ConfigureAwait(false);
 
             _logger.LogTrace("Creating RabbitMQ consumer channel");
 
@@ -435,7 +435,7 @@ namespace EventFlux.RabbitMQ
                 {
                     if (!_eventQueues.TryGetValue(eventName, out var queueName)) return;
 
-                    EnsureConnected();
+                    await EnsureConnectedAsync(CancellationToken.None).ConfigureAwait(false);
 
                     var channel = await _persistentConnection.CreateChannelAsync().ConfigureAwait(false);
                     await using var channelScope = channel.ConfigureAwait(false);

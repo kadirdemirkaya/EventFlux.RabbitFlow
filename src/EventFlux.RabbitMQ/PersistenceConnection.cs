@@ -1,7 +1,6 @@
 ﻿using EventFlux.RabbitMQ.Abstractions;
 using Microsoft.Extensions.Logging;
 using Polly;
-using Polly.Retry;
 using RabbitMQ.Client;
 using RabbitMQ.Client.Events;
 using RabbitMQ.Client.Exceptions;
@@ -17,7 +16,8 @@ namespace EventFlux.RabbitMQ
         IConnection? _connection;
         bool _disposed;
 
-        object @lock = new object();
+        private readonly SemaphoreSlim _connectLock = new SemaphoreSlim(1, 1);
+        private readonly CancellationTokenSource _disposeCts = new CancellationTokenSource();
 
         public PersistenceConnection(IConnectionFactory connectionFactory, ILogger<PersistenceConnection> logger, int retryCount = 5)
             : this(connectionFactory, logger, retryCount, connectionFactory is ConnectionFactory { AutomaticRecoveryEnabled: true })
@@ -59,6 +59,7 @@ namespace EventFlux.RabbitMQ
             if (_disposed) return;
 
             _disposed = true;
+            _disposeCts.Cancel();
 
             if (_connection == null) return;
 
@@ -74,50 +75,88 @@ namespace EventFlux.RabbitMQ
         }
 
         public bool TryConnect()
+            => TryConnectAsync(CancellationToken.None).GetAwaiter().GetResult();
+
+        public async Task<bool> TryConnectAsync(CancellationToken cancellationToken = default)
         {
-            lock (@lock)
+            if (IsConnected) return true;
+            if (_disposed) return false;
+
+            using var linked = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, _disposeCts.Token);
+            var token = linked.Token;
+
+            try
             {
-                if (IsConnected) return true;
-                if (_disposed) return false;
+                await _connectLock.WaitAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_disposed && !cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
 
-                if (_connection != null && RecoversAutomatically)
+            try
+            {
+                return await ConnectAsync(token).ConfigureAwait(false);
+            }
+            catch (OperationCanceledException) when (_disposed && !cancellationToken.IsCancellationRequested)
+            {
+                return false;
+            }
+            finally
+            {
+                _connectLock.Release();
+            }
+        }
+
+        private async Task<bool> ConnectAsync(CancellationToken cancellationToken)
+        {
+            if (IsConnected) return true;
+            if (_disposed) return false;
+
+            if (_connection != null && RecoversAutomatically)
+            {
+                _logger.LogWarning("RabbitMQ connection is down, waiting for automatic recovery");
+                return false;
+            }
+
+            _logger.LogInformation("RabbitMQ Client is trying to connect");
+
+            var policy = Policy.Handle<SocketException>()
+                .Or<BrokerUnreachableException>()
+                .WaitAndRetryAsync(_retryCount, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (ex, time) =>
                 {
-                    _logger.LogWarning("RabbitMQ connection is down, waiting for automatic recovery");
-                    return false;
+                    _logger.LogWarning(ex, "RabbitMQ Client could not connect after {TimeOut}s ({ExceptionMessage})", $"{time.TotalSeconds:n1}", ex.Message);
                 }
+            );
 
-                _logger.LogInformation("RabbitMQ Client is trying to connect");
+            Release(_connection);
+            _connection = null;
 
-                var policy = RetryPolicy.Handle<SocketException>()
-                    .Or<BrokerUnreachableException>()
-                    .WaitAndRetry(_retryCount, retryAttempt => TimeSpan.FromSeconds(Math.Pow(2, retryAttempt)), (ex, time) =>
-                    {
-                        _logger.LogWarning(ex, "RabbitMQ Client could not connect after {TimeOut}s ({ExceptionMessage})", $"{time.TotalSeconds:n1}", ex.Message);
-                    }
-                );
+            var connection = await policy.ExecuteAsync(
+                ct => _connectionFactory.CreateConnectionAsync(ct),
+                cancellationToken).ConfigureAwait(false);
 
-                Release(_connection);
-                _connection = null;
+            if (_disposed)
+            {
+                Release(connection);
+                return false;
+            }
 
-                policy.Execute(() =>
-                {
-                    _connection = _connectionFactory.CreateConnectionAsync().GetAwaiter().GetResult();
-                });
+            _connection = connection;
 
-                if (IsConnected)
-                {
-                    _connection!.ConnectionShutdownAsync += OnConnectionShutdown;
-                    _connection.CallbackExceptionAsync += OnCallbackException;
-                    _connection.ConnectionBlockedAsync += OnConnectionBlocked;
+            if (IsConnected)
+            {
+                _connection.ConnectionShutdownAsync += OnConnectionShutdown;
+                _connection.CallbackExceptionAsync += OnCallbackException;
+                _connection.ConnectionBlockedAsync += OnConnectionBlocked;
 
-                    return true;
-                }
-                else
-                {
-                    _logger.LogCritical("RabbitMQ connections could not be created and opened");
+                return true;
+            }
+            else
+            {
+                _logger.LogCritical("RabbitMQ connections could not be created and opened");
 
-                    return false;
-                }
+                return false;
             }
         }
 
@@ -174,7 +213,7 @@ namespace EventFlux.RabbitMQ
 
             _logger.LogWarning("RabbitMQ connection was shut down ({ReplyText}). Trying to reconnect...", reason.ReplyText);
 
-            Reconnection = Task.Run(TryConnect);
+            Reconnection = Task.Run(() => TryConnectAsync(CancellationToken.None));
 
             return Task.CompletedTask;
         }

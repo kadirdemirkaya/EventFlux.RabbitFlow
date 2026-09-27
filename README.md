@@ -196,6 +196,7 @@ Connection settings come from the `IConnectionFactory` passed to `AddEventFluxRa
 - With `ConnectionFactory.AutomaticRecoveryEnabled` (the default), the client restores the connection, channels and consumers itself. RabbitFlow waits for it and does not open a second connection. Publishes made during the outage are retried until the connection is back or `RetryCount` is exhausted.
 - With automatic recovery disabled, RabbitFlow opens a new connection, releases the old one and restarts every consumer on it.
 - A connection blocked by the broker (flow control) is logged, not reconnected.
+- Connecting never blocks a thread: `PublishAsync` and `SubscribeAsync` wait for the connection asynchronously, and the `CancellationToken` passed to `PublishAsync` also cancels waiting for the broker. Custom `IPersistenceConnection` implementations can override `TryConnectAsync`; the default calls `TryConnect`.
 
 ## Exchange Support
 
