@@ -7,7 +7,7 @@
 		<Nullable>enable</Nullable>
 		<GeneratePackageOnBuild>true</GeneratePackageOnBuild>
 		<PackageId>EventFlux.RabbitFlow</PackageId>
-		<Version>1.1.0</Version>
+		<Version>1.2.0</Version>
 		<Authors>Kadir Demirkaya</Authors>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<Description>Lightweight .NET library for event-driven applications, providing distributed event support and domain events with EventFlux and RabbitMQ.</Description>
@@ -17,7 +17,18 @@
 		<PackageTags>
 			CQRS;EventBus;EventSourcing;DistributedEvents;RabbitMQ;EventFlux;DomainEvents;.NET;MessageBroker;EventDriven
 		</PackageTags>
-		<PackageReleaseNotes>v1.1.0:
+		<PackageReleaseNotes>v1.2.0:
+			- Connecting no longer blocks a thread: added IPersistenceConnection.TryConnectAsync(CancellationToken) (default implementation calls TryConnect), used by publish and subscribe. The token passed to PublishAsync also cancels waiting for the broker, and disposing the connection stops a reconnect in progress
+			- Fixed message loss after a broker restart without automatic recovery: exchanges, queues, bindings and dead-letter queues are declared again before consumers restart
+			- Fixed consumers never restarting after the broker closed the consumer channel while automatic recovery was enabled (the default)
+			- Consumer restart is retried with back-off while the broker is unreachable instead of giving up after one failure
+			- Added RabbitFlowOptions.MaxDeliveryAttempts and RedeliveryDelay (opt-in): a failing message is retried a limited number of times, optionally after a delay, then moved to the dead-letter queue. Without them nothing changes
+			- Added RabbitFlowOptions.PublisherConfirms (opt-in): PublishAsync completes after the broker confirms the message; rejected messages are retried and then throw, events without a bound queue are logged
+			- Fixed message loss in DeadLetter mode: dead-letter publishes are confirmed by the broker before the original message is acknowledged, and requeued if they cannot be routed
+			- Added IPersistenceConnection.CreateChannelAsync(CreateChannelOptions, CancellationToken) with a default implementation
+			- No breaking changes; message format unchanged
+
+			v1.1.0:
 			- Migrated to EventFlux 2.1.0 (requires EventFlux &gt;= 2.1.0). Incoming messages are dispatched with IEventBus.PublishAsync(IEventRequest, CancellationToken); the MissingMethodException that made 1.0.3 drop every message under EventFlux 2.x is gone
 			- Event handlers now use the EventFlux 2.x signature Handle(TEvent, CancellationToken); the token is the delivery's cancellation token
 			- Targets net8.0, net9.0 and net10.0 (net6.0 and net7.0 were dropped because EventFlux 2.x does not support them). Microsoft.Extensions.* dependencies follow the major version of each target, so net8 apps no longer hit CS1705 or assembly load errors
@@ -33,7 +44,7 @@
 			- Removed the "throw-fake-exception" test hook from the consumer
 			- Log messages are in English and use structured templates
 			- Message format is unchanged: same JSON bodies, routing key = event type name, same exchange and queue names</PackageReleaseNotes>
-		<AssemblyInformationalVersion>1.1.0</AssemblyInformationalVersion>
+		<AssemblyInformationalVersion>1.2.0</AssemblyInformationalVersion>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
 		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 	</PropertyGroup>

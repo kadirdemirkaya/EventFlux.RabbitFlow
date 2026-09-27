@@ -3,7 +3,7 @@
 EventFlux.RabbitFlow carries EventFlux events across services over RabbitMQ: publish an `IEventRequest` in one service and its `IEventHandler<T>` runs in another.
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.1.0
+dotnet add package EventFlux.RabbitFlow --version 1.2.0
 ```
 
 ```csharp
@@ -22,6 +22,9 @@ await eventBroker.PublishAsync(new OrderPlaced { OrderId = orderId }, cancellati
 - Handlers are plain EventFlux `IEventHandler<T>` classes, discovered by assembly scanning
 - Subscriptions live for the whole lifetime of the host
 - A failing handler never loses its message: it is requeued or moved to a dead-letter queue
+- Optional limit on delivery attempts, with a delay between attempts
+- Optional publisher confirms
+- Recovers from connection loss, broker restarts and closed channels without losing consumers or bindings
 - Context propagation through message headers
 - Cancellation support from publish to handler
 
@@ -34,13 +37,13 @@ await eventBroker.PublishAsync(new OrderPlaced { OrderId = orderId }, cancellati
 ## Installation
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.1.0
+dotnet add package EventFlux.RabbitFlow --version 1.2.0
 ```
 
 or in your `.csproj`:
 
 ```xml
-<PackageReference Include="EventFlux.RabbitFlow" Version="1.1.0" />
+<PackageReference Include="EventFlux.RabbitFlow" Version="1.2.0" />
 ```
 
 ## Quick Start
@@ -247,7 +250,18 @@ await _eventBroker.SubscribeAsync<ExampleEventRequest, ExampleEventRequestHandle
 
 ## Message format
 
-Messages are JSON bodies with the event type name as routing key, persisted on a direct exchange named after the service. Each subscribing service consumes from a durable queue named `{serviceName}_{EventName}`. The format is the same as in 1.0.x, so services on 1.0.x and 1.1.0 can exchange messages.
+Messages are JSON bodies with the event type name as routing key, persisted on a direct exchange named after the service. Each subscribing service consumes from a durable queue named `{serviceName}_{EventName}`. The format is the same as in 1.0.x, so services on 1.0.x, 1.1.x and 1.2.x can exchange messages. A retried message (see `MaxDeliveryAttempts`) is sent back to its own queue with the queue name as routing key; only 1.2.0 or later consumers understand it.
+
+## Upgrading from 1.1.x
+
+1.2.0 needs no code changes. Default behaviour is unchanged, apart from fixes:
+
+- Connecting no longer blocks a thread, and the token passed to `PublishAsync` also cancels waiting for the broker.
+- After a broker restart without automatic recovery, exchanges, queues and bindings are declared again before consumers restart. Previously messages published after the restart were dropped.
+- A consumer channel closed by the broker is restarted, also with automatic recovery. Previously the application stopped consuming.
+- In `DeadLetter` mode the dead-letter publish is confirmed by the broker before the original is acknowledged; if it cannot be routed, the message is requeued instead of lost.
+
+New opt-in options: `MaxDeliveryAttempts`, `RedeliveryDelay` and `PublisherConfirms`. Enable `MaxDeliveryAttempts` only after every consumer of the queue runs 1.2.0.
 
 ## Upgrading from 1.0.x
 
