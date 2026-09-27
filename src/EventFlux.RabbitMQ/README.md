@@ -212,6 +212,7 @@ A delivery cancelled by consumer shutdown is always requeued. A message for an e
 | `MaxDeliveryAttempts` | `null` (no limit) | Attempts before a failing message is dead-lettered. See [Limiting delivery attempts](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow#limiting-delivery-attempts). |
 | `RedeliveryDelay` | `00:00:00` | Wait between attempts when `MaxDeliveryAttempts` is set. |
 | `PublisherConfirms` | `false` | `PublishAsync` completes only after the broker has confirmed the message. See [Publisher confirms](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow#publisher-confirms). |
+| `DeleteQueueOnUnsubscribe` | `false` | When the last handler of an event is unsubscribed, delete its queue (and retry queue) instead of only unbinding it. Messages still in the queue are then lost. |
 
 Connection settings come from the `IConnectionFactory` passed to `AddEventFluxRabbitFlow`.
 

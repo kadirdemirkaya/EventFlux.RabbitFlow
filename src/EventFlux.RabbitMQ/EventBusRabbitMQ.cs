@@ -40,6 +40,8 @@ namespace EventFlux.RabbitMQ
 
         internal int MaxIdlePublishChannels { get; set; } = 16;
 
+        internal Task SubscriptionRemoval { get; private set; } = Task.CompletedTask;
+
         internal Func<int, TimeSpan> ConsumerRestoreDelay { get; set; } = attempt => TimeSpan.FromSeconds(Math.Min(Math.Pow(2, attempt), 30));
 
         public EventBusRabbitMQ(IPersistenceConnection persistentConnection,
@@ -717,7 +719,12 @@ namespace EventFlux.RabbitMQ
         private Task Consumer_ReceivedAsync(object sender, BasicDeliverEventArgs eventArgs)
             => HandleDeliveryAsync(((AsyncEventingBasicConsumer)sender).Channel, eventArgs);
 
-        private async void SubsManager_OnEventRemoved(object? sender, string eventName)
+        private void SubsManager_OnEventRemoved(object? sender, string eventName)
+        {
+            SubscriptionRemoval = RemoveSubscriptionAsync(eventName);
+        }
+
+        private async Task RemoveSubscriptionAsync(string eventName)
         {
             try
             {
@@ -725,6 +732,7 @@ namespace EventFlux.RabbitMQ
                 try
                 {
                     if (!_eventQueues.TryGetValue(eventName, out var queueName)) return;
+                    if (_subsManager.HasSubscriptionsForEvent(eventName)) return;
 
                     await EnsureConnectedAsync(CancellationToken.None).ConfigureAwait(false);
 
@@ -740,18 +748,24 @@ namespace EventFlux.RabbitMQ
                         _eventExchanges.Remove(eventName);
                     }
 
-                    if (!_subsManager.HasSubscriptionsForEvent(eventName))
+                    if (_consumerTags.Remove(queueName, out var consumerTag)
+                        && !string.IsNullOrEmpty(consumerTag)
+                        && _consumerChannel is { IsOpen: true })
                     {
-                        if (_consumerTags.Remove(queueName, out var consumerTag)
-                            && !string.IsNullOrEmpty(consumerTag)
-                            && _consumerChannel is { IsOpen: true })
-                        {
-                            await _consumerChannel.BasicCancelAsync(consumerTag).ConfigureAwait(false);
-                        }
-
-                        await channel.QueueDeleteAsync(queue: queueName).ConfigureAwait(false);
-                        _eventQueues.Remove(eventName);
+                        await _consumerChannel.BasicCancelAsync(consumerTag).ConfigureAwait(false);
                     }
+
+                    if (_options.DeleteQueueOnUnsubscribe)
+                    {
+                        await channel.QueueDeleteAsync(queue: queueName).ConfigureAwait(false);
+
+                        if (_options.DelaysRedelivery)
+                        {
+                            await channel.QueueDeleteAsync(queue: RabbitFlowOptions.GetRetryQueue(queueName)).ConfigureAwait(false);
+                        }
+                    }
+
+                    _eventQueues.Remove(eventName);
                 }
                 finally
                 {
