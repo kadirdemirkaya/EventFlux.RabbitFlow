@@ -1,5 +1,11 @@
 # EventFlux.RabbitFlow
 
+## NuGet Package Information
+
+| Package | Downloads | License |
+|---------|-----------|---------|
+| [![NuGet](https://img.shields.io/nuget/v/EventFlux.RabbitFlow)](https://www.nuget.org/packages/EventFlux.RabbitFlow) | [![Downloads](https://img.shields.io/nuget/dt/EventFlux.RabbitFlow)](https://www.nuget.org/packages/EventFlux.RabbitFlow) | [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://github.com/kadirdemirkaya/EventFlux.RabbitFlow/blob/main/LICENSE.txt) |
+
 EventFlux.RabbitFlow carries EventFlux events across services over RabbitMQ: publish an `IEventRequest` in one service and its `IEventHandler<T>` runs in another.
 
 ```
