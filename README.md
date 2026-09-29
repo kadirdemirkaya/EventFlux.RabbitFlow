@@ -1,5 +1,5 @@
 <p align="center">
-  <img src="https://raw.githubusercontent.com/kadirdemirkaya/EventFlux.RabbitFlow/main/assets/icon.png" alt="EventFlux logo" width="112" />
+  <img src="https://raw.githubusercontent.com/kadirdemirkaya/EventFlux/main/assets/icon.png" alt="EventFlux logo" width="112" />
 </p>
 
 # EventFlux.RabbitFlow
