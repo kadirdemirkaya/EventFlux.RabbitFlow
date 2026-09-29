@@ -6,7 +6,7 @@
 		<ImplicitUsings>enable</ImplicitUsings>
 		<Nullable>enable</Nullable>
 		<PackageId>EventFlux.RabbitFlow</PackageId>
-		<Version>1.3.1</Version>
+		<Version>1.3.2</Version>
 		<Authors>Kadir Demirkaya</Authors>
 		<PackageLicenseFile>LICENSE.txt</PackageLicenseFile>
 		<Description>Lightweight .NET library for event-driven applications, providing distributed event support and domain events with EventFlux and RabbitMQ.</Description>
@@ -16,7 +16,10 @@
 		<PackageTags>
 			CQRS;EventBus;EventSourcing;DistributedEvents;RabbitMQ;EventFlux;DomainEvents;.NET;MessageBroker;EventDriven
 		</PackageTags>
-		<PackageReleaseNotes>v1.3.1:
+		<PackageReleaseNotes>v1.3.2:
+			- Added the EventFlux icon to the package and the README. No code changes
+
+			v1.3.1:
 			- Depends on EventFlux 2.1.1 (maintenance release, same API and behaviour as 2.1.0). No other changes
 
 			v1.3.0:
@@ -54,14 +57,16 @@
 			- Removed the "throw-fake-exception" test hook from the consumer
 			- Log messages are in English and use structured templates
 			- Message format is unchanged: same JSON bodies, routing key = event type name, same exchange and queue names</PackageReleaseNotes>
-		<AssemblyInformationalVersion>1.3.1</AssemblyInformationalVersion>
+		<AssemblyInformationalVersion>1.3.2</AssemblyInformationalVersion>
 		<PackageReadmeFile>README.md</PackageReadmeFile>
+		<PackageIcon>icon.png</PackageIcon>
 		<PackageRequireLicenseAcceptance>false</PackageRequireLicenseAcceptance>
 	</PropertyGroup>
 
 	<ItemGroup>
 		<None Include="..\..\README.md" Pack="true" PackagePath="" />
 		<None Include="..\..\LICENSE.txt" Pack="true" PackagePath="" />
+		<None Include="..\..\assets\icon.png" Pack="true" PackagePath="" />
 	</ItemGroup>
 
 	<ItemGroup>

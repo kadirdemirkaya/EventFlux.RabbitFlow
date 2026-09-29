@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="https://raw.githubusercontent.com/kadirdemirkaya/EventFlux.RabbitFlow/main/assets/icon.png" alt="EventFlux logo" width="112" />
+</p>
+
 # EventFlux.RabbitFlow
 
 ## NuGet Package Information
@@ -9,7 +13,7 @@
 EventFlux.RabbitFlow carries EventFlux events across services over RabbitMQ: publish an `IEventRequest` in one service and its `IEventHandler<T>` runs in another.
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.3.1
+dotnet add package EventFlux.RabbitFlow --version 1.3.2
 ```
 
 ```csharp
@@ -45,13 +49,13 @@ await eventBroker.PublishAsync(new OrderPlaced { OrderId = orderId }, cancellati
 ## Installation
 
 ```
-dotnet add package EventFlux.RabbitFlow --version 1.3.1
+dotnet add package EventFlux.RabbitFlow --version 1.3.2
 ```
 
 or in your `.csproj`:
 
 ```xml
-<PackageReference Include="EventFlux.RabbitFlow" Version="1.3.1" />
+<PackageReference Include="EventFlux.RabbitFlow" Version="1.3.2" />
 ```
 
 ## Quick Start
